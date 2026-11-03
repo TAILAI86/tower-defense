@@ -192,8 +192,33 @@ const TOTAL_WAVES = WAVES.length;
 const DIFF = {
   easy: { label: '简单', gold: 250, lives: 20, prep: 14, hpMul: 0.90, spdMul: 0.95, desc: '资源充裕，用来熟悉机制' },
   normal: { label: '普通', gold: 210, lives: 20, prep: 11, hpMul: 1.00, spdMul: 1.00, desc: '标准平衡，15 波完整战役' },
-  hard: { label: '困难', gold: 245, lives: 12, prep: 9, hpMul: 1.19, spdMul: 1.04, desc: '资源紧张，容错很低' }
+  hard: { label: '困难', gold: 245, lives: 12, prep: 9, hpMul: 1.19, spdMul: 1.04, desc: '资源紧张，容错很低' },
+  endless: { label: '无尽', gold: 230, lives: 20, prep: 11, hpMul: 1.05, spdMul: 1.02, desc: '波次永无止境，冲击最高纪录' }
 };
+
+/* 波次定义：15 波以内查表；无尽模式第 16 波起由程序生成，强度持续攀升，逢 5 的波次首领压阵 */
+function waveDef(w) {
+  if (w <= WAVES.length) return WAVES[w - 1];
+  const k = w - WAVES.length;
+  const groups = [
+    { t: 'grunt', n: 10 + 2 * k, gap: Math.max(0.22, 0.4 - 0.008 * k) },
+    { t: 'runner', n: 8 + 2 * k, gap: Math.max(0.18, 0.26 - 0.004 * k) },
+    { t: 'splitter', n: 5 + k, gap: 0.5 },
+    { t: 'tank', n: 3 + k, gap: Math.max(0.5, 0.85 - 0.01 * k) }
+  ];
+  if (w % 5 === 0) groups.unshift({ t: 'boss', n: Math.max(1, Math.floor(w / 15)), gap: 3.0 });
+  return groups;
+}
+
+/* 无尽模式最佳纪录（localStorage 可能不可用，需保护） */
+function loadEndlessBest() {
+  try { return +(localStorage.getItem('TD_ENDLESS_BEST') || 0); } catch (e) { return 0; }
+}
+function saveEndlessBest(wave) {
+  try {
+    if (wave > loadEndlessBest()) localStorage.setItem('TD_ENDLESS_BEST', String(wave));
+  } catch (e) { /* 隐私模式等场景下静默跳过 */ }
+}
 
 /* ---------------- 数值工具 ---------------- */
 function hpScale(wave, mode) {
@@ -217,7 +242,7 @@ function upgradeCost(t) {
 }
 function sellValue(t) { return Math.floor(t.invested * 0.6); }
 function waveSummary(i) {
-  const w = WAVES[i];
+  const w = waveDef(i + 1);
   if (!w) return '';
   return w.map(function (g) { return ENEMIES[g.t].name + '×' + g.n; }).join(' · ');
 }
@@ -299,16 +324,19 @@ function sellTower(s, t) {
 function startWave(s) {
   if (s.phase !== 'prep') return;
   s.wave++;
-  if (s.wave > TOTAL_WAVES) return;
+  if (s.mode !== 'endless' && s.wave > TOTAL_WAVES) return;
   s.phase = 'spawning';
   s.spawnTimer = 0.35;
   s.spawnQueue = [];
-  const def = WAVES[s.wave - 1];
+  const def = waveDef(s.wave);
   for (let i = 0; i < def.length; i++) {
     const g = def[i];
     for (let k = 0; k < g.n; k++) s.spawnQueue.push({ t: g.t, gap: g.gap });
   }
-  s.banner = { main: '第 ' + s.wave + ' / ' + TOTAL_WAVES + ' 波', sub: waveSummary(s.wave - 1), t: 2.6 };
+  const label = s.mode === 'endless'
+    ? (s.wave > TOTAL_WAVES ? '无尽 · 第 ' + s.wave + ' 波' : '第 ' + s.wave + ' 波 · ∞')
+    : '第 ' + s.wave + ' / ' + TOTAL_WAVES + ' 波';
+  s.banner = { main: label, sub: waveSummary(s.wave - 1), t: 2.6 };
   sfx(240, 0.16, 'sawtooth', 0.05);
 }
 function callWaveEarly(s) {
@@ -327,7 +355,7 @@ function completeWave(s) {
   s.gold += bonus;
   s.stat.goldEarned += bonus;
   s.score += 80 * s.wave;
-  if (s.wave >= TOTAL_WAVES) { finishGame(s, true); return; }
+  if (s.wave >= TOTAL_WAVES && s.mode !== 'endless') { finishGame(s, true); return; }
   s.phase = 'prep';
   s.prepTotal = s.wave >= TOTAL_WAVES - 1 ? 12 : 10;
   s.prepLeft = s.prepTotal;
@@ -341,6 +369,7 @@ function finishGame(s, win) {
     s.score += s.lives * 50 + Math.floor(s.gold * 0.5);
     sfx(660, 0.16, 'sine', 0.06);
   } else {
+    if (s.mode === 'endless') saveEndlessBest(s.wave);
     sfx(120, 0.4, 'sawtooth', 0.06);
   }
 }
@@ -1033,20 +1062,21 @@ function uiRects(s) {
   };
 }
 function menuRects() {
-  const bw = 210, bh = 96, gap = 22;
-  const x0 = (W - (bw * 3 + gap * 2)) / 2;
+  const bw = 190, bh = 96, gap = 18;
+  const x0 = (W - (bw * 4 + gap * 3)) / 2;
   return {
     btns: [
       { x: x0, y: 386, w: bw, h: bh, mode: 'easy' },
       { x: x0 + bw + gap, y: 386, w: bw, h: bh, mode: 'normal' },
-      { x: x0 + (bw + gap) * 2, y: 386, w: bw, h: bh, mode: 'hard' }
+      { x: x0 + (bw + gap) * 2, y: 386, w: bw, h: bh, mode: 'hard' },
+      { x: x0 + (bw + gap) * 3, y: 386, w: bw, h: bh, mode: 'endless' }
     ]
   };
 }
 function overRects() {
   return {
-    restart: { x: W / 2 - 108, y: 470, w: 216, h: 50 },
-    menu: { x: W / 2 - 108, y: 532, w: 216, h: 44 }
+    restart: { x: W / 2 - 108, y: 486, w: 216, h: 48 },
+    menu: { x: W / 2 - 108, y: 546, w: 216, h: 42 }
   };
 }
 function inRect(r, x, y) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
@@ -1097,9 +1127,12 @@ function drawHUD(ctx, s) {
   txt(ctx, '得分', 302, 45, 10, C.faint, 'left', 500);
 
   // 波次
-  const waveTxt = '第 ' + Math.min(s.wave + (s.phase === 'prep' ? 1 : 0), TOTAL_WAVES) + ' / ' + TOTAL_WAVES + ' 波';
+  const waveNum = s.wave + (s.phase === 'prep' ? 1 : 0);
+  const waveTxt = s.mode === 'endless'
+    ? '第 ' + waveNum + ' 波 · ∞'
+    : '第 ' + Math.min(waveNum, TOTAL_WAVES) + ' / ' + TOTAL_WAVES + ' 波';
   txt(ctx, waveTxt, 420, 22, 14, C.ink, 'left', 700);
-  const prog = s.wave === 0 ? 0 : s.wave / TOTAL_WAVES;
+  const prog = s.wave === 0 ? 0 : Math.min(1, s.wave / TOTAL_WAVES);
   const bw = 240;
   rr(ctx, 420, 34, bw, 8, 4);
   ctx.fillStyle = '#0f1d24'; ctx.fill();
@@ -1207,7 +1240,7 @@ function drawBar(ctx, s) {
     txt(ctx, '准备阶段', wv.x + 12, wv.y + 18, 13, '#9fe4ff', 'left', 700);
     txt(ctx, Math.ceil(s.prepLeft) + ' 秒后敌军来袭', wv.x + 12, wv.y + 38, 11.5, C.dim, 'left', 500);
     const nextIdx = s.wave;
-    txt(ctx, nextIdx < TOTAL_WAVES ? '下一波：' + waveSummary(nextIdx) : '', wv.x + 12, wv.y + 56, 10, C.faint, 'left', 500);
+    txt(ctx, (s.mode === 'endless' || nextIdx < TOTAL_WAVES) ? '下一波：' + waveSummary(nextIdx) : '', wv.x + 12, wv.y + 56, 10, C.faint, 'left', 500);
     // 呼叫按钮
     const bx = wv.x + 12, by = wv.y + 62, bw2 = wv.w - 24, bh2 = 18;
     rr(ctx, bx, by, bw2, bh2, 6);
@@ -1298,7 +1331,7 @@ function drawMenu(ctx, s) {
     '② 点击已建造的塔可升级 / 出售',
     '③ 箭塔单体 · 炮台范围 · 霜塔减速 · 狙击远程 · 磁暴连锁',
     '④ 小心分裂虫，它倒下后会钻出两只幼虫',
-    '⑤ 撑过 ' + TOTAL_WAVES + ' 波即为胜利，核心生命归零则失败'
+    '⑤ 战役撑过 ' + TOTAL_WAVES + ' 波即胜利；无尽模式没有终点，只有纪录'
   ];
   for (let i = 0; i < tips.length; i++) txt(ctx, tips[i], W / 2, 284 + i * 20, 12.5, '#8aa6b4', 'center', 500);
 
@@ -1315,6 +1348,10 @@ function drawMenu(ctx, s) {
     txt(ctx, d.label, b.x + b.w / 2, b.y + 30, 22, '#eaf7ff', 'center', 700);
     txt(ctx, '生命 ' + d.lives + ' · 金币 ' + d.gold, b.x + b.w / 2, b.y + 54, 11.5, '#9fb6c2', 'center', 500);
     txt(ctx, d.desc, b.x + b.w / 2, b.y + 74, 10.5, '#6d8794', 'center', 500);
+    if (b.mode === 'endless') {
+      const best = loadEndlessBest();
+      txt(ctx, best > 0 ? '最佳纪录：第 ' + best + ' 波' : '暂无纪录', b.x + b.w / 2, b.y + 89, 9.5, '#f4c451', 'center', 600);
+    }
   }
   txt(ctx, '快捷键 1-5 选塔 · U 升级 · X 出售 · 空格 暂停 · R 重开', W / 2, 540, 11.5, '#5d7683', 'center', 500);
   txt(ctx, '全部图形由代码绘制，无外部素材', W / 2, 566, 10.5, '#445c68', 'center', 500);
@@ -1335,6 +1372,9 @@ function drawOver(ctx, s, win) {
   txt(ctx, '最终得分  ' + s.score, W / 2, 420, 20, '#6ecbff', 'center', 700);
   txt(ctx, '击杀 ' + s.stat.kills + '　·　建塔 ' + s.stat.built + '　·　漏怪 ' + s.stat.leaked + '　·　剩余生命 ' + s.lives,
     W / 2, 448, 12, '#8aa6b4', 'center', 500);
+  if (!win && s.mode === 'endless') {
+    txt(ctx, '无尽最佳纪录：第 ' + Math.max(s.wave, loadEndlessBest()) + ' 波', W / 2, 472, 12.5, '#f4c451', 'center', 700);
+  }
 
   const R = overRects();
   rr(ctx, R.restart.x, R.restart.y, R.restart.w, R.restart.h, 10);

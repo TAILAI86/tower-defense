@@ -137,6 +137,11 @@ console.log('\n=== 不建塔（必须判负）===');
 const idle = run('normal', { idle: true });
 console.log(`[normal] ${idle.scene} 到第 ${idle.wave} 波 生命 ${idle.lives}`);
 
+console.log('\n=== 无尽模式（机器人守到力竭，必须越过 15 波且不判胜）===');
+const er = run('endless');
+console.log(`[endless] ${er.scene} 撑到第 ${er.wave} 波 击杀 ${er.kills} 时长 ${er.simSec}s 渲染异常 ${er.renderErr || '无'}`);
+console.log('    ' + er.timeline);
+
 console.log('\n=== 单元断言 ===');
 let fail = 0;
 function assert(name, cond) {
@@ -240,6 +245,16 @@ function assert(name, cond) {
   const b = TD.placeTower(s, 'arrow', 0, 0);
   TD.sellTower(s, b.tower);
   assert('出售返还计入 goldEarned', s.stat.goldEarned === g0 + TD.sellValue({ invested: 60 }));
+}
+{
+  /* 无尽模式：清完第 15 波不判胜，第 16 波由程序生成 */
+  const s = TD.newGame('endless');
+  s.wave = 15; s.phase = 'clearing'; s.spawnQueue = []; s.enemies = [];
+  TD.step(s, 1 / 60);
+  assert('无尽模式清完 15 波不判胜', s.scene === 'play' && s.phase === 'prep');
+  TD.callWaveEarly(s);
+  assert('无尽模式第 16 波程序生成', s.phase === 'spawning' && s.wave === 16 && s.spawnQueue.length > 0);
+  assert('无尽模式机器人越过 15 波后力竭', er.wave > 15 && er.scene === 'lose');
 }
 console.log('\n--- UI 点击链路 ---');
 {
