@@ -175,6 +175,7 @@ const ENEMIES = {
   splitter: { name: '分裂虫', hp: 130, speed: 58, gold: 14, leak: 1, score: 18, r: 12, armor: 0, color: '#8ad94f', shape: 'blob', splitInto: 'mite', splitN: 2 },
   mite: { name: '幼虫', hp: 26, speed: 88, gold: 3, leak: 1, score: 5, r: 7, armor: 0, color: '#c9f06a', shape: 'circle' },
   shield: { name: '护盾兵', hp: 150, shield: 90, shieldRegen: 14, shieldDelay: 3.5, speed: 44, gold: 16, leak: 2, score: 24, r: 12, armor: 0.08, color: '#4fc3c8', shape: 'shield' },
+  medic: { name: '医疗兵', hp: 120, speed: 46, gold: 8, leak: 1, score: 22, r: 11, armor: 0, color: '#f2ead8', shape: 'medic', healR: 95, healRate: 8 },
   boss: { name: '首领', hp: 1600, speed: 28, gold: 130, leak: 6, score: 250, r: 19, armor: 0.2, color: '#d4569f', shape: 'boss' }
 };
 
@@ -188,12 +189,12 @@ const WAVES = [
   [{ t: 'splitter', n: 6, gap: 0.9 }, { t: 'grunt', n: 10, gap: 0.42 }],
   [{ t: 'tank', n: 8, gap: 1.2 }, { t: 'shield', n: 4, gap: 1.0 }, { t: 'runner', n: 8, gap: 0.38 }],
   [{ t: 'splitter', n: 8, gap: 0.8 }, { t: 'runner', n: 14, gap: 0.3 }],
-  [{ t: 'tank', n: 10, gap: 1.0 }, { t: 'shield', n: 6, gap: 0.9 }, { t: 'grunt', n: 12, gap: 0.38 }],
-  [{ t: 'runner', n: 18, gap: 0.26 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 10, gap: 0.95 }],
-  [{ t: 'splitter', n: 10, gap: 0.7 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 8, gap: 1.0 }],
-  [{ t: 'runner', n: 24, gap: 0.24 }, { t: 'splitter', n: 12, gap: 0.62 }],
-  [{ t: 'tank', n: 10, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.8 }, { t: 'splitter', n: 12, gap: 0.55 }, { t: 'grunt', n: 12, gap: 0.3 }],
-  [{ t: 'boss', n: 1, gap: 2.0 }, { t: 'tank', n: 8, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.75 }, { t: 'splitter', n: 10, gap: 0.55 }, { t: 'runner', n: 14, gap: 0.28 }]
+  [{ t: 'tank', n: 10, gap: 1.0 }, { t: 'shield', n: 6, gap: 0.9 }, { t: 'grunt', n: 12, gap: 0.38 }, { t: 'medic', n: 2, gap: 2.4 }],
+  [{ t: 'runner', n: 18, gap: 0.26 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 10, gap: 0.95 }, { t: 'medic', n: 2, gap: 2.2 }],
+  [{ t: 'splitter', n: 10, gap: 0.7 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 8, gap: 1.0 }, { t: 'medic', n: 2, gap: 2.2 }],
+  [{ t: 'runner', n: 24, gap: 0.24 }, { t: 'splitter', n: 12, gap: 0.62 }, { t: 'medic', n: 2, gap: 2.2 }],
+  [{ t: 'tank', n: 10, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.8 }, { t: 'splitter', n: 12, gap: 0.55 }, { t: 'grunt', n: 12, gap: 0.3 }, { t: 'medic', n: 3, gap: 2.0 }],
+  [{ t: 'boss', n: 1, gap: 2.0 }, { t: 'tank', n: 8, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.75 }, { t: 'splitter', n: 10, gap: 0.55 }, { t: 'runner', n: 14, gap: 0.28 }, { t: 'medic', n: 3, gap: 2.0 }]
 ];
 const TOTAL_WAVES = WAVES.length;
 
@@ -213,6 +214,7 @@ function waveDef(w) {
     { t: 'runner', n: 8 + 2 * k, gap: Math.max(0.18, 0.26 - 0.004 * k) },
     { t: 'splitter', n: 5 + k, gap: 0.5 },
     { t: 'shield', n: 4 + Math.floor(k * 0.8), gap: Math.max(0.45, 0.8 - 0.008 * k) },
+    { t: 'medic', n: 1 + Math.floor(k * 0.4), gap: 2.2 },
     { t: 'tank', n: 3 + k, gap: Math.max(0.5, 0.85 - 0.01 * k) }
   ];
   if (w % 5 === 0) groups.unshift({ t: 'boss', n: Math.max(1, Math.floor(w / 15)), gap: 3.0 });
@@ -236,7 +238,10 @@ function saveEndlessBest(wave) {
 /* ---------------- 数值工具 ---------------- */
 function hpScale(wave, mode) {
   const k = wave - 1;
-  return (1 + 0.2 * k + 0.014 * k * k) * DIFF[mode].hpMul;
+  let sc = (1 + 0.2 * k + 0.014 * k * k) * DIFF[mode].hpMul;
+  /* 无尽模式越过战役波次后额外加压，保证曲线终将达到不可承受之重 */
+  if (mode === 'endless' && wave > TOTAL_WAVES) sc *= 1 + 0.05 * (wave - TOTAL_WAVES);
+  return sc;
 }
 function towerStats(t) {
   const d = TOWERS[t.key], lv = t.level - 1;
@@ -412,6 +417,7 @@ function spawnEnemy(s, type, dist) {
     shield: Math.round((def.shield || 0) * sc), maxShield: Math.round((def.shield || 0) * sc),
     shieldRegen: (def.shieldRegen || 0) * sc, shieldDelay: def.shieldDelay || 0, shieldT: 0,
     poisonDps: 0, poisonT: 0, poisonSrc: null, shred: 0, shredT: 0,
+    healR: def.healR || 0, healRate: (def.healRate || 0) * sc, healFx: 0,
     gold: def.gold, leak: def.leak, score: def.score,
     color: def.color, shape: def.shape, ang: p.ang, hitT: 0, dead: false, wob: Math.random() * 6.28
   };
@@ -621,6 +627,22 @@ function step(s, dt) {
     if (e.shieldT > 0) e.shieldT = Math.max(0, e.shieldT - d);
     if (e.maxShield > 0 && e.shield < e.maxShield && e.shieldT <= 0 && e.poisonT <= 0) {
       e.shield = Math.min(e.maxShield, e.shield + e.shieldRegen * d);
+    }
+    /* 医疗兵治疗光环：恢复光环内受伤同伴的生命（不自愈、不越上限） */
+    if (e.healRate > 0) {
+      e.healFx -= d;
+      let pulsed = false;
+      for (let j = 0; j < enemyN; j++) {
+        const o = s.enemies[j];
+        if (o === e || o.dead || o.hp >= o.maxHp) continue;
+        if (Math.hypot(o.x - e.x, o.y - e.y) > e.healR) continue;
+        o.hp = Math.min(o.maxHp, o.hp + e.healRate * d);
+        pulsed = true;
+      }
+      if (pulsed && e.healFx <= 0) {
+        e.healFx = 0.8;
+        addEffect(s, { kind: 'ring', x: e.x, y: e.y, r0: e.r + 4, r1: e.healR, color: '#7dffa8', life: 0.5 });
+      }
     }
     if (e.slowT > 0) {
       e.slowT -= d;
@@ -1011,6 +1033,14 @@ function drawEnemy(ctx, e) {
     ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 2; ctx.stroke();
     ctx.beginPath(); ctx.arc(0, 0, r * 0.45, 0, 6.3);
     ctx.fillStyle = '#c8fbff'; ctx.fill();
+  } else if (e.shape === 'medic') {
+    // 医疗兵：白袍圆身 + 翠绿十字徽记
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.3);
+    ctx.fillStyle = body; ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.32)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#38c96a';
+    rr(ctx, -r * 0.18, -r * 0.62, r * 0.36, r * 1.24, 2); ctx.fill();
+    rr(ctx, -r * 0.62, -r * 0.18, r * 1.24, r * 0.36, 2); ctx.fill();
   } else if (e.shape === 'boss') {
     const p = 1 + Math.sin(e.wob) * 0.06;
     ctx.rotate(e.wob * 0.4);
@@ -1437,7 +1467,7 @@ function drawMenu(ctx, s) {
     '① 点击下方卡片选塔，再点草地空位建造',
     '② 点击已建造的塔可升级 / 出售',
     '③ 箭塔单体 · 炮台范围 · 霜塔减速 · 狙击远程 · 磁暴连锁 · 毒液腐蚀',
-    '④ 分裂虫会钻出幼虫；毒液能压制护盾兵的护盾恢复',
+    '④ 分裂虫会钻出幼虫；医疗兵会治疗同伴；毒液能压制护盾恢复',
     '⑤ 战役撑过 ' + TOTAL_WAVES + ' 波即胜利；无尽模式没有终点，只有纪录'
   ];
   for (let i = 0; i < tips.length; i++) txt(ctx, tips[i], W / 2, 284 + i * 20, 12.5, '#8aa6b4', 'center', 500);

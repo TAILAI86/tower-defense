@@ -364,6 +364,38 @@ assert('不建塔必须失败', idle.scene === 'lose' && idle.lives === 0);
   assert('第 6 波生成护盾兵', s.wave === 6 && s.spawnQueue.some(q => q.t === 'shield'));
 }
 {
+  /* 医疗兵：治疗光环内受伤同伴，不自愈、不越上限、不越距离 */
+  const s = TD.newGame('normal'); s.wave = 1; s.prepLeft = 9999;
+  const m = TD.spawnEnemy(s, 'medic', 500);
+  const g = TD.spawnEnemy(s, 'grunt', 500);
+  g.hp = Math.floor(g.maxHp / 2);
+  const hp0 = g.hp, mHp = m.hp;
+  TD.step(s, 0.05);
+  assert('医疗兵治疗周围受伤同伴', g.hp > hp0 && g.hp <= g.maxHp);
+  assert('医疗兵不能治疗自己', m.hp === mHp);
+  g.speed = m.speed; // 保持同速，让同伴留在治疗光环内
+  for (let i = 0; i < 200 && g.hp < g.maxHp; i++) TD.step(s, 0.05);
+  assert('治疗不会突破生命上限', g.hp === g.maxHp);
+}
+{
+  /* 治疗光环有距离限制 */
+  const s = TD.newGame('normal'); s.wave = 1; s.prepLeft = 9999;
+  TD.spawnEnemy(s, 'medic', 100);
+  const far = TD.spawnEnemy(s, 'grunt', 900);
+  far.hp = 1;
+  TD.step(s, 0.05);
+  assert('治疗光环有距离限制', far.hp === 1);
+}
+{
+  /* 医疗兵已进入战役波次与无尽程序生成 */
+  const s = TD.newGame('normal'); s.wave = 9; s.prepLeft = 0;
+  TD.callWaveEarly(s);
+  assert('第 10 波生成医疗兵', s.wave === 10 && s.spawnQueue.some(q => q.t === 'medic'));
+  const es = TD.newGame('endless'); es.wave = 15; es.prepLeft = 0;
+  TD.callWaveEarly(es);
+  assert('无尽程序波次包含医疗兵', es.spawnQueue.some(q => q.t === 'medic'));
+}
+{
   /* 无尽纪录只接受有限正数，并向下取整 */
   delete storage.TD_ENDLESS_BEST; // 清除前面无尽实战写入的纪录
   TD.saveEndlessBest(12.9);
