@@ -53,12 +53,13 @@ function rr(ctx, x, y, w, h, r) {
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
-function txt(ctx, str, x, y, size, color, align, weight) {
+function txt(ctx, str, x, y, size, color, align, weight, maxWidth) {
   ctx.font = (weight || 600) + ' ' + size + 'px "Microsoft YaHei","PingFang SC",system-ui,sans-serif';
   ctx.fillStyle = color;
   ctx.textAlign = align || 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(str, x, y);
+  if (maxWidth) ctx.fillText(str, x, y, maxWidth);
+  else ctx.fillText(str, x, y);
 }
 function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
 function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
@@ -157,9 +158,15 @@ const TOWERS = {
     range: 128, dmg: 18, rate: 0.9, proj: 'chain', pspd: 0, splash: 0,
     chain: 3, chainR: 96, falloff: 0.72,
     desc: '闪电在敌群间跳跃，最多连锁 3 个目标'
+  },
+  venom: {
+    key: 'venom', name: '毒液塔', role: '腐蚀', cost: 95, color: '#9bd84f', dark: '#477c2c',
+    range: 124, dmg: 8, rate: 1.1, proj: 'homing', pspd: 420, splash: 0,
+    poisonDps: 8, poisonDur: 3.2, shred: 0.08, shredDur: 3.2,
+    desc: '酸液造成持续伤害并削弱护甲，还能压制护盾恢复'
   }
 };
-const TOWER_KEYS = ['arrow', 'cannon', 'frost', 'sniper', 'tesla'];
+const TOWER_KEYS = ['arrow', 'cannon', 'frost', 'sniper', 'tesla', 'venom'];
 
 const ENEMIES = {
   grunt: { name: '步兵', hp: 62, speed: 52, gold: 8, leak: 1, score: 10, r: 11, armor: 0, color: '#e0765c', shape: 'circle' },
@@ -167,6 +174,7 @@ const ENEMIES = {
   tank: { name: '装甲车', hp: 240, speed: 36, gold: 18, leak: 2, score: 26, r: 14, armor: 0.15, color: '#93a1b0', shape: 'square' },
   splitter: { name: '分裂虫', hp: 130, speed: 58, gold: 14, leak: 1, score: 18, r: 12, armor: 0, color: '#8ad94f', shape: 'blob', splitInto: 'mite', splitN: 2 },
   mite: { name: '幼虫', hp: 26, speed: 88, gold: 3, leak: 1, score: 5, r: 7, armor: 0, color: '#c9f06a', shape: 'circle' },
+  shield: { name: '护盾兵', hp: 150, shield: 90, shieldRegen: 14, shieldDelay: 3.5, speed: 44, gold: 16, leak: 2, score: 24, r: 12, armor: 0.08, color: '#4fc3c8', shape: 'shield' },
   boss: { name: '首领', hp: 1600, speed: 28, gold: 130, leak: 6, score: 250, r: 19, armor: 0.2, color: '#d4569f', shape: 'boss' }
 };
 
@@ -176,16 +184,16 @@ const WAVES = [
   [{ t: 'runner', n: 10, gap: 0.5 }],
   [{ t: 'grunt', n: 10, gap: 0.58 }, { t: 'runner', n: 6, gap: 0.45 }],
   [{ t: 'tank', n: 4, gap: 1.6 }, { t: 'grunt', n: 8, gap: 0.5 }],
-  [{ t: 'runner', n: 12, gap: 0.4 }, { t: 'tank', n: 5, gap: 1.35 }],
+  [{ t: 'runner', n: 10, gap: 0.4 }, { t: 'shield', n: 4, gap: 1.1 }, { t: 'tank', n: 4, gap: 1.35 }],
   [{ t: 'splitter', n: 6, gap: 0.9 }, { t: 'grunt', n: 10, gap: 0.42 }],
-  [{ t: 'tank', n: 8, gap: 1.2 }, { t: 'runner', n: 10, gap: 0.38 }],
+  [{ t: 'tank', n: 8, gap: 1.2 }, { t: 'shield', n: 4, gap: 1.0 }, { t: 'runner', n: 8, gap: 0.38 }],
   [{ t: 'splitter', n: 8, gap: 0.8 }, { t: 'runner', n: 14, gap: 0.3 }],
-  [{ t: 'tank', n: 10, gap: 1.0 }, { t: 'grunt', n: 14, gap: 0.38 }],
-  [{ t: 'runner', n: 22, gap: 0.26 }, { t: 'tank', n: 10, gap: 0.95 }],
-  [{ t: 'splitter', n: 12, gap: 0.7 }, { t: 'tank', n: 8, gap: 1.0 }],
+  [{ t: 'tank', n: 10, gap: 1.0 }, { t: 'shield', n: 6, gap: 0.9 }, { t: 'grunt', n: 12, gap: 0.38 }],
+  [{ t: 'runner', n: 18, gap: 0.26 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 10, gap: 0.95 }],
+  [{ t: 'splitter', n: 10, gap: 0.7 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 8, gap: 1.0 }],
   [{ t: 'runner', n: 24, gap: 0.24 }, { t: 'splitter', n: 12, gap: 0.62 }],
-  [{ t: 'tank', n: 12, gap: 0.9 }, { t: 'splitter', n: 14, gap: 0.55 }, { t: 'grunt', n: 16, gap: 0.3 }],
-  [{ t: 'boss', n: 1, gap: 2.0 }, { t: 'tank', n: 10, gap: 0.9 }, { t: 'splitter', n: 12, gap: 0.55 }, { t: 'runner', n: 16, gap: 0.28 }]
+  [{ t: 'tank', n: 10, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.8 }, { t: 'splitter', n: 12, gap: 0.55 }, { t: 'grunt', n: 12, gap: 0.3 }],
+  [{ t: 'boss', n: 1, gap: 2.0 }, { t: 'tank', n: 8, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.75 }, { t: 'splitter', n: 10, gap: 0.55 }, { t: 'runner', n: 14, gap: 0.28 }]
 ];
 const TOTAL_WAVES = WAVES.length;
 
@@ -204,6 +212,7 @@ function waveDef(w) {
     { t: 'grunt', n: 10 + 2 * k, gap: Math.max(0.22, 0.4 - 0.008 * k) },
     { t: 'runner', n: 8 + 2 * k, gap: Math.max(0.18, 0.26 - 0.004 * k) },
     { t: 'splitter', n: 5 + k, gap: 0.5 },
+    { t: 'shield', n: 4 + Math.floor(k * 0.8), gap: Math.max(0.45, 0.8 - 0.008 * k) },
     { t: 'tank', n: 3 + k, gap: Math.max(0.5, 0.85 - 0.01 * k) }
   ];
   if (w % 5 === 0) groups.unshift({ t: 'boss', n: Math.max(1, Math.floor(w / 15)), gap: 3.0 });
@@ -212,11 +221,15 @@ function waveDef(w) {
 
 /* 无尽模式最佳纪录（localStorage 可能不可用，需保护） */
 function loadEndlessBest() {
-  try { return +(localStorage.getItem('TD_ENDLESS_BEST') || 0); } catch (e) { return 0; }
+  try {
+    const v = Number(localStorage.getItem('TD_ENDLESS_BEST') || 0);
+    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+  } catch (e) { return 0; }
 }
 function saveEndlessBest(wave) {
   try {
-    if (wave > loadEndlessBest()) localStorage.setItem('TD_ENDLESS_BEST', String(wave));
+    const v = Number.isFinite(wave) && wave > 0 ? Math.floor(wave) : 0;
+    if (v > loadEndlessBest()) localStorage.setItem('TD_ENDLESS_BEST', String(v));
   } catch (e) { /* 隐私模式等场景下静默跳过 */ }
 }
 
@@ -233,7 +246,11 @@ function towerStats(t) {
     rate: d.rate * Math.pow(1.15, lv),
     splash: d.splash * (1 + lv * 0.12),
     slow: d.slow || 0,
-    slowDur: (d.slowDur || 0) * (1 + lv * 0.15)
+    slowDur: (d.slowDur || 0) * (1 + lv * 0.15),
+    poisonDps: (d.poisonDps || 0) * Math.pow(1.7, lv),
+    poisonDur: (d.poisonDur || 0) * (1 + lv * 0.15),
+    shred: (d.shred || 0) + lv * 0.02,
+    shredDur: (d.shredDur || 0) * (1 + lv * 0.15)
   };
 }
 function upgradeCost(t) {
@@ -280,6 +297,7 @@ function buildableCells(s) {
 /* ---------------- 建造 / 升级 / 出售 ---------------- */
 function placeTower(s, key, c, r) {
   const def = TOWERS[key];
+  if (!Number.isInteger(c) || !Number.isInteger(r)) return { ok: false, why: '无效的建造位置' };
   if (!def || !cellFree(s, c, r)) return { ok: false, why: '这里不能建造' };
   if (s.gold < def.cost) return { ok: false, why: '金币不足' };
   s.gold -= def.cost;
@@ -295,7 +313,8 @@ function placeTower(s, key, c, r) {
   return { ok: true, tower: t };
 }
 function upgradeTower(s, t) {
-  if (!t || t.level >= MAX_LV) return { ok: false, why: '已满级' };
+  if (!t || s.occ[t.c + ',' + t.r] !== t || s.towers.indexOf(t) < 0) return { ok: false, why: '防御塔已不存在' };
+  if (t.level >= MAX_LV) return { ok: false, why: '已满级' };
   const cost = upgradeCost(t);
   if (s.gold < cost) return { ok: false, why: '金币不足' };
   s.gold -= cost;
@@ -307,7 +326,7 @@ function upgradeTower(s, t) {
   return { ok: true };
 }
 function sellTower(s, t) {
-  if (!t) return;
+  if (!t || s.occ[t.c + ',' + t.r] !== t || s.towers.indexOf(t) < 0) return { ok: false, why: '防御塔已不存在' };
   const back = sellValue(t);
   s.gold += back;
   s.stat.goldEarned += back;
@@ -318,13 +337,14 @@ function sellTower(s, t) {
   addFloat(s, t.x, t.y - 6, '+' + back, C.gold);
   addEffect(s, { kind: 'ring', x: t.x, y: t.y, r0: 26, r1: 4, color: C.gold, life: 0.3 });
   sfx(300, 0.1, 'sine', 0.05);
+  return { ok: true, value: back };
 }
 
 /* ---------------- 波次 ---------------- */
 function startWave(s) {
-  if (s.phase !== 'prep') return;
+  if (s.scene !== 'play' || s.paused || s.phase !== 'prep') return;
+  if (s.mode !== 'endless' && s.wave >= TOTAL_WAVES) return;
   s.wave++;
-  if (s.mode !== 'endless' && s.wave > TOTAL_WAVES) return;
   s.phase = 'spawning';
   s.spawnTimer = 0.35;
   s.spawnQueue = [];
@@ -340,7 +360,9 @@ function startWave(s) {
   sfx(240, 0.16, 'sawtooth', 0.05);
 }
 function callWaveEarly(s) {
-  if (s.phase !== 'prep') return;
+  if (s.scene !== 'play' || s.paused || s.phase !== 'prep') return;
+  // 先验证波次再发奖励，避免战役结束后重复领取提前召唤金币
+  if (s.mode !== 'endless' && s.wave >= TOTAL_WAVES) return;
   const bonus = Math.floor(s.prepLeft * 2.5);
   if (bonus > 0) {
     s.gold += bonus;
@@ -377,15 +399,19 @@ function finishGame(s, win) {
 /* ---------------- 敌人 ---------------- */
 function spawnEnemy(s, type, dist) {
   const def = ENEMIES[type];
+  if (!def) return null;
   const sc = hpScale(s.wave, s.mode);
   const hp = Math.round(def.hp * sc);
-  const d0 = Math.max(0, dist || 0);
+  const d0 = Number.isFinite(dist) ? Math.max(0, dist) : 0;
   const p = posAt(d0);
   const e = {
     id: s.nextId++, type: type, x: p.x, y: p.y, dist: d0,
     hp: hp, maxHp: hp,
     speed: def.speed * DIFF[s.mode].spdMul * (1 + 0.012 * (s.wave - 1)),
     slowT: 0, slowMul: 1, r: def.r, armor: def.armor,
+    shield: Math.round((def.shield || 0) * sc), maxShield: Math.round((def.shield || 0) * sc),
+    shieldRegen: (def.shieldRegen || 0) * sc, shieldDelay: def.shieldDelay || 0, shieldT: 0,
+    poisonDps: 0, poisonT: 0, poisonSrc: null, shred: 0, shredT: 0,
     gold: def.gold, leak: def.leak, score: def.score,
     color: def.color, shape: def.shape, ang: p.ang, hitT: 0, dead: false, wob: Math.random() * 6.28
   };
@@ -393,11 +419,20 @@ function spawnEnemy(s, type, dist) {
   return e;
 }
 
-function damageEnemy(s, e, dmg, srcTower) {
-  if (e.dead) return;
-  const real = dmg * (1 - e.armor);
-  e.hp -= real;
-  e.hitT = 0.12;
+function damageEnemy(s, e, dmg, srcTower, isDot) {
+  if (e.dead || dmg <= 0) return;
+  let real = dmg;
+  if (e.shield > 0) {
+    const absorbed = Math.min(e.shield, real);
+    e.shield -= absorbed;
+    real -= absorbed;
+  }
+  if (e.shieldDelay) e.shieldT = e.shieldDelay;
+  if (real > 0) {
+    const armor = Math.max(0, (e.armor || 0) - (e.shredT > 0 ? e.shred || 0 : 0));
+    e.hp -= real * (1 - Math.min(0.9, armor));
+  }
+  if (!isDot) e.hitT = 0.12;
   if (e.hp <= 0) {
     e.dead = true;
     s.gold += e.gold;
@@ -427,13 +462,28 @@ function areaDamage(s, x, y, radius, dmg, slow, slowDur, srcTower) {
     const rr2 = radius + e.r;
     if (dist2(x, y, e.x, e.y) <= rr2 * rr2) {
       damageEnemy(s, e, dmg, srcTower);
-      if (slow) applySlow(e, slow, slowDur);
+      if (slow && !e.dead) applySlow(e, slow, slowDur);
     }
   }
 }
 function applySlow(e, mul, dur) {
-  if (mul < e.slowMul || e.slowT <= 0.15) { e.slowMul = mul; }
-  e.slowT = Math.max(e.slowT, dur);
+  if (e.slowT <= 0.15 || mul < e.slowMul) {
+    e.slowMul = mul;
+    e.slowT = dur;
+  } else if (mul === e.slowMul) {
+    e.slowT = Math.max(e.slowT, dur);
+  }
+}
+function applyVenom(s, e, shot) {
+  if (e.dead || !shot.poisonDps) return;
+  // 毒素不叠加：保留最强伤害，较弱攻击只刷新已有持续时间
+  if (e.poisonT <= 0 || shot.poisonDps >= (e.poisonDps || 0)) {
+    e.poisonDps = shot.poisonDps;
+    e.poisonSrc = shot.src;
+  }
+  e.poisonT = Math.max(e.poisonT || 0, shot.poisonDur);
+  e.shred = Math.max(e.shred || 0, shot.shred || 0);
+  e.shredT = Math.max(e.shredT || 0, shot.shredDur || 0);
 }
 
 /* ---------------- 防御塔开火 ---------------- */
@@ -482,13 +532,15 @@ function fire(s, t, st, target) {
     s.shots.push({
       kind: 'homing', x: t.x + Math.cos(t.ang) * 14, y: t.y + Math.sin(t.ang) * 14,
       target: target, dmg: st.dmg, speed: def.pspd, color: def.color,
-      splash: 0, slow: 0, slowDur: 0, src: t, ang: t.ang, life: 3
+      splash: 0, slow: 0, slowDur: 0, src: t, ang: t.ang, life: 3,
+      poisonDps: st.poisonDps, poisonDur: st.poisonDur, shred: st.shred, shredDur: st.shredDur
     });
     sfx(900, 0.04, 'square', 0.018);
   } else if (def.proj === 'shell') {
     const d = Math.hypot(target.x - t.x, target.y - t.y);
     const flight = d / def.pspd;
-    const pred = posAt(target.dist + target.speed * flight * 0.9);
+    const moveMul = target.slowT > 0 ? target.slowMul : 1;
+    const pred = posAt(target.dist + target.speed * moveMul * flight * 0.9);
     s.shots.push({
       kind: 'shell', x: t.x, y: t.y, sx: t.x, sy: t.y, tx: pred.x, ty: pred.y,
       dmg: st.dmg, speed: def.pspd, color: def.color, splash: st.splash,
@@ -526,7 +578,7 @@ function addFloat(s, x, y, text, color) {
 
 /* ---------------- 主更新 ---------------- */
 function step(s, dt) {
-  if (!s || s.scene !== 'play' || s.paused) return;
+  if (!s || s.scene !== 'play' || s.paused || !Number.isFinite(dt) || dt <= 0) return;
   const d = Math.min(dt, 0.05) * s.speed;
   s.time += d;
   if (s.banner) { s.banner.t -= d; if (s.banner.t <= 0) s.banner = null; }
@@ -551,10 +603,25 @@ function step(s, dt) {
     if (s.scene !== 'play') return;
   }
 
-  /* 敌人移动 */
-  for (let i = 0; i < s.enemies.length; i++) {
+  /* 敌人状态与移动（缓存数量：本帧分裂出的幼虫从下一帧开始更新） */
+  const enemyN = s.enemies.length;
+  for (let i = 0; i < enemyN; i++) {
     const e = s.enemies[i];
     if (e.dead) continue;
+    if (e.poisonT > 0 && e.poisonDps > 0) {
+      damageEnemy(s, e, e.poisonDps * d, e.poisonSrc, true);
+      e.poisonT = Math.max(0, e.poisonT - d);
+      if (e.dead) continue;
+      if (e.poisonT <= 0) { e.poisonDps = 0; e.poisonSrc = null; }
+    }
+    if (e.shredT > 0) {
+      e.shredT = Math.max(0, e.shredT - d);
+      if (e.shredT <= 0) e.shred = 0;
+    }
+    if (e.shieldT > 0) e.shieldT = Math.max(0, e.shieldT - d);
+    if (e.maxShield > 0 && e.shield < e.maxShield && e.shieldT <= 0 && e.poisonT <= 0) {
+      e.shield = Math.min(e.maxShield, e.shield + e.shieldRegen * d);
+    }
     if (e.slowT > 0) {
       e.slowT -= d;
       if (e.slowT <= 0) { e.slowT = 0; e.slowMul = 1; }
@@ -608,6 +675,7 @@ function step(s, dt) {
         sh.ang = Math.atan2(dy, dx);
         if (len <= mv + tg.r * 0.5) {
           damageEnemy(s, tg, sh.dmg, sh.src);
+          if (!tg.dead) applyVenom(s, tg, sh);
           addEffect(s, { kind: 'spark', x: tg.x, y: tg.y, color: sh.color, life: 0.16 });
           dead = true;
         } else {
@@ -830,6 +898,18 @@ function drawTowerShape(ctx, key, x, y, ang, scale, level) {
     ctx.strokeStyle = 'rgba(240,224,90,.9)';
     ctx.lineWidth = 1.4 * u;
     ctx.beginPath(); ctx.arc(17.5 * u, 0, 5.2 * u, 0, 6.3); ctx.stroke();
+  } else if (key === 'venom') {
+    // 毒液塔：双管喷雾器 + 发光酸液罐
+    ctx.fillStyle = d.dark;
+    ctx.beginPath(); ctx.arc(-3 * u, 0, 7.5 * u, 0, 6.3); ctx.fill();
+    ctx.fillStyle = d.color;
+    rr(ctx, -1 * u, -6 * u, 19 * u, 4.5 * u, 2 * u); ctx.fill();
+    rr(ctx, -1 * u, 1.5 * u, 19 * u, 4.5 * u, 2 * u); ctx.fill();
+    ctx.fillStyle = '#e4ffb5';
+    ctx.beginPath(); ctx.arc(-3 * u, 0, 3.8 * u, 0, 6.3); ctx.fill();
+    ctx.fillStyle = d.color;
+    ctx.beginPath(); ctx.arc(19 * u, -3.7 * u, 2.2 * u, 0, 6.3); ctx.fill();
+    ctx.beginPath(); ctx.arc(19 * u, 3.7 * u, 2.2 * u, 0, 6.3); ctx.fill();
   }
   ctx.restore();
 
@@ -883,6 +963,14 @@ function drawEnemy(ctx, e) {
     ctx.beginPath(); ctx.arc(e.x, e.y, r + 4.5, 0, 6.3);
     ctx.strokeStyle = 'rgba(127,216,255,.85)'; ctx.lineWidth = 2; ctx.stroke();
   }
+  if (e.poisonT > 0) {
+    ctx.beginPath(); ctx.arc(e.x, e.y, r + 2.5, 0, 6.3);
+    ctx.strokeStyle = 'rgba(155,216,79,.8)'; ctx.lineWidth = 1.6; ctx.stroke();
+  }
+  if (e.shield > 0) {
+    ctx.beginPath(); ctx.arc(e.x, e.y, r + 5.5, 0, 6.3);
+    ctx.strokeStyle = 'rgba(110,235,255,.72)'; ctx.lineWidth = 2; ctx.stroke();
+  }
 
   ctx.translate(e.x, e.y);
   const body = e.hitT > 0 ? '#ffffff' : e.color;
@@ -911,6 +999,18 @@ function drawEnemy(ctx, e) {
     ctx.fillStyle = 'rgba(255,255,255,.4)';
     ctx.beginPath(); ctx.arc(-r * 0.55, -r * 0.28, r * 0.2, 0, 6.3); ctx.fill();
     ctx.beginPath(); ctx.arc(r * 0.28, -r * 0.28, r * 0.2, 0, 6.3); ctx.fill();
+  } else if (e.shape === 'shield') {
+    // 护盾兵：六边形装甲 + 中央能量核
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = i * Math.PI / 3;
+      if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+      else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath(); ctx.fillStyle = body; ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.45, 0, 6.3);
+    ctx.fillStyle = '#c8fbff'; ctx.fill();
   } else if (e.shape === 'boss') {
     const p = 1 + Math.sin(e.wob) * 0.06;
     ctx.rotate(e.wob * 0.4);
@@ -944,6 +1044,13 @@ function drawEnemy(ctx, e) {
   rr(ctx, bx - 1, by - 1, bw + 2, bh + 2, 2.5); ctx.fill();
   ctx.fillStyle = pct > 0.55 ? '#5ed67f' : (pct > 0.25 ? '#f4c451' : '#ef5f5f');
   rr(ctx, bx, by, bw * pct, bh, 2); ctx.fill();
+  if (e.maxShield > 0) {
+    const sy = by - 6;
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    rr(ctx, bx - 1, sy - 1, bw + 2, 4, 2); ctx.fill();
+    ctx.fillStyle = '#68dce8';
+    rr(ctx, bx, sy, bw * clamp(e.shield / e.maxShield, 0, 1), 2, 1); ctx.fill();
+  }
 }
 
 function drawShots(ctx, s) {
@@ -1042,7 +1149,7 @@ function drawEffects(ctx, s) {
 }
 
 /* ---------------- UI 布局（渲染与点击共用同一份几何） ---------------- */
-const CARD_W = 92, CARD_H = 78, CARD_GAP = 8;
+const CARD_W = 78, CARD_H = 78, CARD_GAP = 6;
 function uiRects(s) {
   const cards = [];
   for (let i = 0; i < TOWER_KEYS.length; i++) {
@@ -1181,12 +1288,12 @@ function drawBar(ctx, s) {
 
     ctx.save();
     ctx.globalAlpha = afford ? 1 : 0.45;
-    drawTowerShape(ctx, key, r.x + 21, r.y + 26, -Math.PI / 2, 0.72, 0);
+    drawTowerShape(ctx, key, r.x + 17, r.y + 26, -Math.PI / 2, 0.65, 0);
     ctx.restore();
 
-    txt(ctx, d.name, r.x + 38, r.y + 19, 13, afford ? C.ink : C.faint, 'left', 700);
-    txt(ctx, d.role, r.x + 38, r.y + 35, 10, C.faint, 'left', 500);
-    txt(ctx, d.cost + ' 金', r.x + 10, r.y + 62, 13, afford ? C.gold : '#7a6a45', 'left', 700);
+    txt(ctx, d.name, r.x + 31, r.y + 19, 12, afford ? C.ink : C.faint, 'left', 700);
+    txt(ctx, d.role, r.x + 31, r.y + 35, 10, C.faint, 'left', 500);
+    txt(ctx, d.cost + ' 金', r.x + 8, r.y + 62, 12, afford ? C.gold : '#7a6a45', 'left', 700);
     txt(ctx, '[' + (i + 1) + ']', r.x + r.w - 10, r.y + 62, 11, C.faint, 'right', 500);
   }
 
@@ -1201,7 +1308,7 @@ function drawBar(ctx, s) {
     const d = TOWERS[t.key], st = towerStats(t);
     txt(ctx, d.name + '  Lv.' + t.level, p.x + 12, p.y + 18, 14, d.color, 'left', 700);
     txt(ctx, '伤害 ' + Math.round(st.dmg) + '   射程 ' + Math.round(st.range) + '   射速 ' + st.rate.toFixed(2) + '/s',
-      p.x + 12, p.y + 38, 11.5, C.dim, 'left', 500);
+      p.x + 12, p.y + 38, 11, C.dim, 'left', 500, p.w - 24);
 
     // 升级按钮
     const ub = R.upBtn;
@@ -1240,7 +1347,7 @@ function drawBar(ctx, s) {
     txt(ctx, '准备阶段', wv.x + 12, wv.y + 18, 13, '#9fe4ff', 'left', 700);
     txt(ctx, Math.ceil(s.prepLeft) + ' 秒后敌军来袭', wv.x + 12, wv.y + 38, 11.5, C.dim, 'left', 500);
     const nextIdx = s.wave;
-    txt(ctx, (s.mode === 'endless' || nextIdx < TOTAL_WAVES) ? '下一波：' + waveSummary(nextIdx) : '', wv.x + 12, wv.y + 56, 10, C.faint, 'left', 500);
+    txt(ctx, (s.mode === 'endless' || nextIdx < TOTAL_WAVES) ? '下一波：' + waveSummary(nextIdx) : '', wv.x + 12, wv.y + 56, 10, C.faint, 'left', 500, wv.w - 24);
     // 呼叫按钮
     const bx = wv.x + 12, by = wv.y + 62, bw2 = wv.w - 24, bh2 = 18;
     rr(ctx, bx, by, bw2, bh2, 6);
@@ -1270,7 +1377,7 @@ function drawBanner(ctx, s) {
   ctx.strokeStyle = 'rgba(110,203,255,.5)';
   ctx.lineWidth = 1.5; ctx.stroke();
   txt(ctx, b.main, W / 2, y + 19, 16, '#eaf7ff', 'center', 700);
-  txt(ctx, b.sub, W / 2, y + 37, 11.5, '#a8c4d2', 'center', 500);
+  txt(ctx, b.sub, W / 2, y + 37, 11.5, '#a8c4d2', 'center', 500, 450);
   ctx.restore();
 }
 
@@ -1329,8 +1436,8 @@ function drawMenu(ctx, s) {
   const tips = [
     '① 点击下方卡片选塔，再点草地空位建造',
     '② 点击已建造的塔可升级 / 出售',
-    '③ 箭塔单体 · 炮台范围 · 霜塔减速 · 狙击远程 · 磁暴连锁',
-    '④ 小心分裂虫，它倒下后会钻出两只幼虫',
+    '③ 箭塔单体 · 炮台范围 · 霜塔减速 · 狙击远程 · 磁暴连锁 · 毒液腐蚀',
+    '④ 分裂虫会钻出幼虫；毒液能压制护盾兵的护盾恢复',
     '⑤ 战役撑过 ' + TOTAL_WAVES + ' 波即胜利；无尽模式没有终点，只有纪录'
   ];
   for (let i = 0; i < tips.length; i++) txt(ctx, tips[i], W / 2, 284 + i * 20, 12.5, '#8aa6b4', 'center', 500);
@@ -1353,7 +1460,7 @@ function drawMenu(ctx, s) {
       txt(ctx, best > 0 ? '最佳纪录：第 ' + best + ' 波' : '暂无纪录', b.x + b.w / 2, b.y + 89, 9.5, '#f4c451', 'center', 600);
     }
   }
-  txt(ctx, '快捷键 1-5 选塔 · U 升级 · X 出售 · 空格 暂停 · R 重开', W / 2, 540, 11.5, '#5d7683', 'center', 500);
+  txt(ctx, '快捷键 1-6 选塔 · U 升级 · X 出售 · 空格 暂停 · R 重开', W / 2, 540, 11.5, '#5d7683', 'center', 500);
   txt(ctx, '全部图形由代码绘制，无外部素材', W / 2, 566, 10.5, '#445c68', 'center', 500);
   ctx.restore();
 }
@@ -1456,6 +1563,7 @@ function cellFromPoint(x, y) {
 }
 
 function handleClick(s, x, y) {
+  if (!s || s.scene !== 'play') return;
   const R = uiRects(s);
 
   // 顶栏按钮
@@ -1520,6 +1628,8 @@ function bindInput(canvas, getState) {
     return { x: (ev.clientX - r.left) * sx, y: (ev.clientY - r.top) * sy };
   }
   canvas.addEventListener('pointerdown', function (ev) {
+    // 右键只负责取消选择，不能先触发一次建造或按钮点击
+    if (ev.button !== 0) return;
     ev.preventDefault();
     const s = getState();
     const p = toLocal(ev);
@@ -1570,6 +1680,7 @@ function bindInput(canvas, getState) {
       if (k === '1') startNewRun('easy');
       if (k === '2') startNewRun('normal');
       if (k === '3') startNewRun('hard');
+      if (k === '4') startNewRun('endless');
       return;
     }
     if (s.scene === 'win' || s.scene === 'lose') {
@@ -1655,12 +1766,14 @@ const api = {
   W: W, H: H, CELL: CELL, PATH: PATH, TOWERS: TOWERS, ENEMIES: ENEMIES, WAVES: WAVES,
   DIFF: DIFF, MAX_LV: MAX_LV,
   newGame: newGame, step: step, draw: draw, spawnEnemy: spawnEnemy,
+  damageEnemy: damageEnemy, applyVenom: applyVenom,
   placeTower: placeTower, upgradeTower: upgradeTower, sellTower: sellTower,
   startWave: startWave, callWaveEarly: callWaveEarly,
   buildableCells: buildableCells, cellFree: cellFree, towerStats: towerStats,
   upgradeCost: upgradeCost, sellValue: sellValue, hpScale: hpScale,
   state: function () { return S; },
   click: handleClick, uiRects: uiRects, menuRects: menuRects, overRects: overRects,
+  bindInput: bindInput, loadEndlessBest: loadEndlessBest, saveEndlessBest: saveEndlessBest,
   boot: boot, muted: function (v) { if (v !== undefined) muted = !!v; return muted; }
 };
 if (typeof global.TD === 'undefined') global.TD = api;

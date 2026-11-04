@@ -10,12 +10,17 @@ const m = html.match(/<script>([\s\S]*?)<\/script>/);
 if (!m) throw new Error('未找到 <script> 块');
 
 const winStub = {
-  innerWidth: 1400, innerHeight: 900, devicePixelRatio: 1,
-  addEventListener() {}, requestAnimationFrame() {}, __TD_NO_BOOT__: true
+  innerWidth: 1400, innerHeight: 900, devicePixelRatio: 1, listeners: {},
+  addEventListener(name, fn) { this.listeners[name] = fn; }, requestAnimationFrame() {}, __TD_NO_BOOT__: true
 };
 const docStub = { getElementById: () => null, addEventListener() {}, readyState: 'complete' };
-new Function('window', 'document', 'requestAnimationFrame', 'performance', 'console', m[1])(
-  winStub, docStub, () => {}, { now: Date.now }, console);
+const storage = Object.create(null);
+global.localStorage = {
+  getItem(k) { return Object.prototype.hasOwnProperty.call(storage, k) ? storage[k] : null; },
+  setItem(k, v) { storage[k] = String(v); }
+};
+new Function('window', 'document', 'localStorage', 'requestAnimationFrame', 'performance', 'console', m[1])(
+  winStub, docStub, global.localStorage, () => {}, { now: Date.now }, console);
 
 const TD = winStub.TD;
 if (!TD) throw new Error('游戏未导出 TD API');
@@ -121,8 +126,10 @@ function run(mode, opts) {
 }
 
 console.log('=== 机器人完整对局（像人一样沿路建塔）===');
+const campaign = {};
 for (const mode of ['easy', 'normal', 'hard']) {
   const r = run(mode);
+  campaign[mode] = r;
   console.log(`[${r.mode}] ${r.scene}  到第 ${r.wave}/${TD.WAVES.length} 波  剩余生命 ${r.lives}  得分 ${r.score}  塔 ${r.towers}  击杀 ${r.kills}  漏怪 ${r.leaked}  时长 ${r.simSec}s  渲染异常 ${r.renderErr || '无'}`);
   console.log('    ' + r.timeline);
 }
@@ -143,11 +150,15 @@ console.log(`[endless] ${er.scene} 撑到第 ${er.wave} 波 击杀 ${er.kills} �
 console.log('    ' + er.timeline);
 
 console.log('\n=== 单元断言 ===');
-let fail = 0;
+let fail = 0, passed = 0;
 function assert(name, cond) {
   console.log((cond ? 'PASS  ' : 'FAIL  ') + name);
-  if (!cond) { fail++; process.exitCode = 1; }
+  if (cond) passed++;
+  else { fail++; process.exitCode = 1; }
 }
+assert('简单/普通/困难机器人均可通关 15 波', ['easy', 'normal', 'hard'].every(m => campaign[m].scene === 'win' && campaign[m].wave === 15));
+assert('完整对局与菜单渲染无异常', ['easy', 'normal', 'hard'].every(m => !campaign[m].renderErr) && !er.renderErr);
+assert('不建塔必须失败', idle.scene === 'lose' && idle.lives === 0);
 {
   const s = TD.newGame('normal');
   const g0 = s.gold;
@@ -256,6 +267,134 @@ function assert(name, cond) {
   assert('无尽模式第 16 波程序生成', s.phase === 'spawning' && s.wave === 16 && s.spawnQueue.length > 0);
   assert('无尽模式机器人越过 15 波后力竭', er.wave > 15 && er.scene === 'lose');
 }
+{
+  /* 输入边界：非法格子、未知敌人与无效时间步都不能污染状态 */
+  const s = TD.newGame('normal');
+  const g0 = s.gold;
+  assert('非整数坐标不能建塔', TD.placeTower(s, 'arrow', 0.5, 0).ok === false && s.gold === g0);
+  assert('未知敌人类型安全返回 null', TD.spawnEnemy(s, 'missing') === null && s.enemies.length === 0);
+  const e1 = TD.spawnEnemy(s, 'grunt', -20), e2 = TD.spawnEnemy(s, 'grunt', NaN);
+  assert('负距离与 NaN 出生距离归零', e1.dist === 0 && e2.dist === 0);
+  const time0 = s.time;
+  TD.step(s, NaN); TD.step(s, -1); TD.step(s, 0);
+  assert('无效时间步不会推进游戏', s.time === time0);
+}
+{
+  /* 已出售的塔不能再次升级或出售 */
+  const s = TD.newGame('normal');
+  const b = TD.placeTower(s, 'arrow', 0, 0);
+  TD.sellTower(s, b.tower);
+  const g0 = s.gold;
+  assert('失效塔引用不能重复升级', TD.upgradeTower(s, b.tower).ok === false && s.gold === g0);
+  assert('失效塔引用不能重复出售', TD.sellTower(s, b.tower).ok === false && s.gold === g0);
+}
+{
+  /* 提前召唤必须先验证波次与暂停状态，再发金币 */
+  const s = TD.newGame('normal');
+  s.wave = TD.WAVES.length; s.phase = 'prep'; s.prepLeft = 8;
+  const g0 = s.gold;
+  TD.callWaveEarly(s);
+  assert('战役最终波之后不能刷提前召唤奖励', s.gold === g0 && s.wave === TD.WAVES.length && s.phase === 'prep');
+  const p = TD.newGame('normal'); p.paused = true;
+  const pg = p.gold;
+  TD.callWaveEarly(p);
+  assert('暂停时 API 召唤也不发奖励', p.gold === pg && p.wave === 0);
+}
+{
+  /* 护盾先承伤，脱战后恢复；毒素期间禁止恢复 */
+  const s = TD.newGame('normal'); s.wave = 1; s.prepLeft = 9999;
+  const e = TD.spawnEnemy(s, 'shield', 500);
+  const hp0 = e.hp, sh0 = e.shield;
+  TD.damageEnemy(s, e, 30, null);
+  assert('护盾先于生命承受伤害', e.hp === hp0 && e.shield === sh0 - 30);
+  e.shield = 0; e.shieldT = 0; e.poisonT = 0;
+  TD.step(s, 0.05);
+  assert('护盾脱战延迟结束后可恢复', e.shield > 0);
+  e.shield = 0; e.shieldT = 0; e.poisonDps = 2; e.poisonT = 1;
+  TD.step(s, 0.05);
+  assert('毒素压制护盾恢复', e.shield === 0 && e.poisonT < 1);
+}
+{
+  /* 毒液削甲与持续时间结束后的状态清理 */
+  const s = TD.newGame('normal'); s.wave = 1; s.prepLeft = 9999;
+  const e = TD.spawnEnemy(s, 'tank', 500);
+  TD.applyVenom(s, e, { poisonDps: 8, poisonDur: 3, shred: 0.08, shredDur: 3, src: null });
+  const hp0 = e.hp;
+  TD.damageEnemy(s, e, 100, null, true);
+  assert('毒液削甲按预期提高生命伤害', Math.abs((hp0 - e.hp) - 93) < 0.001);
+  for (let i = 0; i < 70; i++) TD.step(s, 0.05);
+  assert('削甲结束后状态归零', e.shredT === 0 && e.shred === 0);
+}
+{
+  /* 持续伤害击杀要正确计入塔与全局统计 */
+  const s = TD.newGame('normal'); s.gold = 9999; s.wave = 1; s.prepLeft = 9999;
+  const b = TD.placeTower(s, 'venom', 6, 7);
+  const e = TD.spawnEnemy(s, 'grunt', 500);
+  e.hp = 1; e.poisonDps = 20; e.poisonT = 1; e.poisonSrc = b.tower;
+  const k0 = s.stat.kills;
+  for (let i = 0; i < 5; i++) TD.step(s, 0.05);
+  assert('毒素击杀归属来源防御塔', s.stat.kills === k0 + 1 && b.tower.kills === 1);
+}
+{
+  /* 毒液塔实战开火：追踪弹命中后施加毒素与削甲 */
+  const s = TD.newGame('normal'); s.gold = 9999; s.wave = 1; s.prepLeft = 9999;
+  TD.placeTower(s, 'venom', 6, 7);
+  const e = TD.spawnEnemy(s, 'grunt', 520);
+  let venomSeen = false;
+  for (let i = 0; i < 120; i++) {
+    TD.step(s, 1 / 60);
+    if (e.poisonT > 0 && e.shredT > 0) { venomSeen = true; break; }
+  }
+  assert('毒液塔追踪弹命中并施加双状态', venomSeen);
+}
+{
+  /* 高速追踪弹跨步碰撞：一帧跨过目标也应命中 */
+  const s = TD.newGame('normal'); s.wave = 1; s.prepLeft = 9999;
+  const e = TD.spawnEnemy(s, 'grunt', 500);
+  const hp0 = e.hp;
+  s.shots.push({ kind: 'homing', x: e.x - 100, y: e.y, target: e, dmg: 15,
+    speed: 10000, color: '#fff', src: null, ang: 0 });
+  TD.step(s, 0.05);
+  assert('高速子弹不会穿过目标', e.hp === hp0 - 15 && s.shots.length === 0);
+}
+{
+  /* 新敌军已进入战役波次 */
+  const s = TD.newGame('normal'); s.wave = 5; s.prepLeft = 0;
+  TD.callWaveEarly(s);
+  assert('第 6 波生成护盾兵', s.wave === 6 && s.spawnQueue.some(q => q.t === 'shield'));
+}
+{
+  /* 无尽纪录只接受有限正数，并向下取整 */
+  delete storage.TD_ENDLESS_BEST; // 清除前面无尽实战写入的纪录
+  TD.saveEndlessBest(12.9);
+  assert('无尽纪录保存整数波次', storage.TD_ENDLESS_BEST === '12' && TD.loadEndlessBest() === 12);
+  TD.saveEndlessBest(NaN);
+  assert('NaN 不覆盖无尽纪录', TD.loadEndlessBest() === 12);
+  storage.TD_ENDLESS_BEST = 'broken';
+  assert('损坏的本地纪录安全归零', TD.loadEndlessBest() === 0);
+}
+{
+  /* 六塔布局不能重叠，右键不能误建塔 */
+  const s = TD.newGame('normal');
+  const R = TD.uiRects(s);
+  assert('六张塔卡完整且包含毒液塔', R.cards.length === 6 && R.cards[5].key === 'venom');
+  assert('升级/出售按钮不侵入波次面板', R.upBtn.x + R.upBtn.w <= R.wave.x && R.sellBtn.x + R.sellBtn.w <= R.wave.x);
+  const handlers = {};
+  const canvas = {
+    addEventListener(name, fn) { handlers[name] = fn; },
+    getBoundingClientRect() { return { left: 0, top: 0, width: TD.W, height: TD.H }; }
+  };
+  TD.bindInput(canvas, () => s);
+  s.pick = 'arrow';
+  handlers.pointerdown({ button: 2, clientX: 260, clientY: 360, preventDefault() {} });
+  assert('右键按下不会误建防御塔', s.towers.length === 0 && s.pick === 'arrow');
+  handlers.contextmenu({ preventDefault() {} });
+  assert('右键菜单事件取消选塔', s.pick === null);
+  const menu = TD.newGame('normal'); menu.scene = 'menu';
+  TD.bindInput(canvas, () => menu);
+  winStub.listeners.keydown({ key: '4' });
+  assert('主菜单快捷键 4 可进入无尽模式', TD.state() && TD.state().mode === 'endless');
+}
 console.log('\n--- UI 点击链路 ---');
 {
   const s = TD.newGame('normal');
@@ -295,4 +434,4 @@ console.log('\n--- UI 点击链路 ---');
   TD.click(s, 300, 300);
   assert('金币不足无法建造且飘出提示', s.towers.length === 0 && s.floats.length > 0);
 }
-console.log('\n断言失败数: ' + fail);
+console.log('\n断言结果: ' + passed + ' 项通过 / ' + fail + ' 项失败');
