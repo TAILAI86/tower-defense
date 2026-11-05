@@ -235,6 +235,81 @@ function saveEndlessBest(wave) {
   } catch (e) { /* 隐私模式等场景下静默跳过 */ }
 }
 
+/* ---------------- 存档（断点续战） ----------------
+   只序列化可重建的纯数据：跳过函数、子弹引用与瞬时特效，
+   加载时由防御塔与路径重新推导占位表与坐标，确保读档即战。 */
+const SAVE_KEY = 'TD_SAVE_V1';
+function snapshot(s) {
+  if (!s || s.scene !== 'play') return null;
+  return {
+    v: 1, mode: s.mode, paused: s.paused, speed: s.speed || 1, time: s.time,
+    gold: s.gold, lives: s.lives, maxLives: s.maxLives, score: s.score,
+    wave: s.wave, phase: s.phase, prepTotal: s.prepTotal, prepLeft: s.prepLeft,
+    spawnQueue: s.spawnQueue, spawnTimer: s.spawnTimer, nextId: s.nextId,
+    stat: { kills: s.stat.kills, built: s.stat.built, leaked: s.stat.leaked, goldEarned: s.stat.goldEarned },
+    towers: s.towers.map(function (t) {
+      return { id: t.id, key: t.key, c: t.c, r: t.r, x: t.x, y: t.y, level: t.level, cd: t.cd, ang: t.ang, invested: t.invested, kills: t.kills };
+    }),
+    enemies: s.enemies.map(function (e) {
+      return {
+        id: e.id, type: e.type, dist: e.dist, hp: e.hp, maxHp: e.maxHp, speed: e.speed,
+        slowT: e.slowT, slowMul: e.slowMul, r: e.r, armor: e.armor,
+        shield: e.shield, maxShield: e.maxShield, shieldRegen: e.shieldRegen,
+        shieldDelay: e.shieldDelay, shieldT: e.shieldT,
+        poisonDps: e.poisonDps, poisonT: e.poisonT, poisonSrc: e.poisonSrc ? e.poisonSrc.id : null,
+        shred: e.shred, shredT: e.shredT, healR: e.healR, healRate: e.healRate, healFx: e.healFx,
+        gold: e.gold, leak: e.leak, score: e.score, color: e.color, shape: e.shape, ang: e.ang, wob: e.wob
+      };
+    }),
+    savedAt: Date.now()
+  };
+}
+function saveGame(s) {
+  if (typeof localStorage === 'undefined' || !s || s.scene !== 'play') return false;
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(snapshot(s))); return true; }
+  catch (e) { return false; }
+}
+function saveInfo() {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const snap = JSON.parse(localStorage.getItem(SAVE_KEY));
+    return (snap && snap.v === 1) ? { mode: snap.mode, wave: snap.wave, lives: snap.lives } : null;
+  } catch (e) { return null; }
+}
+function hasSave() { return !!saveInfo(); }
+function clearSave() {
+  if (typeof localStorage === 'undefined') return;
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+}
+function loadGame() {
+  if (typeof localStorage === 'undefined') return null;
+  let snap;
+  try { snap = JSON.parse(localStorage.getItem(SAVE_KEY)); } catch (e) { return null; }
+  if (!snap || snap.v !== 1) return null;
+  const s = {
+    mode: snap.mode, scene: 'play', paused: !!snap.paused, speed: snap.speed || 1, time: snap.time || 0,
+    gold: snap.gold, lives: snap.lives, maxLives: snap.maxLives, score: snap.score,
+    wave: snap.wave, phase: snap.phase, prepTotal: snap.prepTotal, prepLeft: snap.prepLeft,
+    spawnQueue: snap.spawnQueue || [], spawnTimer: snap.spawnTimer || 0, nextId: snap.nextId || 1,
+    enemies: [], towers: [], shots: [], effects: [], floats: [],
+    occ: {}, pick: null, sel: null, hover: { c: -1, r: -1 }, banner: null, hint: 0, shake: 0,
+    saveT: 0, saveFlash: 0,
+    stat: snap.stat || { kills: 0, built: 0, leaked: 0, goldEarned: 0 }
+  };
+  const byId = {};
+  for (let i = 0; i < (snap.towers || []).length; i++) {
+    const t = snap.towers[i]; t.flash = 0;
+    s.towers.push(t); s.occ[t.c + ',' + t.r] = t; byId[t.id] = t;
+  }
+  for (let i = 0; i < (snap.enemies || []).length; i++) {
+    const e = snap.enemies[i], p = posAt(e.dist);
+    e.x = p.x; e.y = p.y; e.ang = p.ang; e.hitT = 0;
+    e.poisonSrc = (e.poisonSrc != null) ? (byId[e.poisonSrc] || null) : null;
+    s.enemies.push(e);
+  }
+  return s;
+}
+
 /* ---------------- 数值工具 ---------------- */
 function hpScale(wave, mode) {
   const k = wave - 1;
@@ -281,6 +356,7 @@ function newGame(mode) {
     enemies: [], towers: [], shots: [], effects: [], floats: [],
     occ: {}, pick: null, sel: null, hover: { c: -1, r: -1 },
     banner: null, hint: 9, shake: 0, nextId: 1,
+    saveT: 0, saveFlash: 0,
     stat: { kills: 0, built: 0, leaked: 0, goldEarned: 0 }
   };
 }
@@ -387,10 +463,12 @@ function completeWave(s) {
   s.prepTotal = s.wave >= TOTAL_WAVES - 1 ? 12 : 10;
   s.prepLeft = s.prepTotal;
   s.banner = { main: '第 ' + s.wave + ' 波 已清除', sub: '奖励 +' + bonus + ' 金币', t: 2.2 };
+  saveGame(s);
   sfx(600, 0.1, 'sine', 0.05);
   setTimeout(function () { sfx(760, 0.12, 'sine', 0.05); }, 110);
 }
 function finishGame(s, win) {
+  clearSave(); // 对局结束，存档失效
   s.scene = win ? 'win' : 'lose';
   if (win) {
     s.score += s.lives * 50 + Math.floor(s.gold * 0.5);
@@ -590,6 +668,11 @@ function step(s, dt) {
   if (s.banner) { s.banner.t -= d; if (s.banner.t <= 0) s.banner = null; }
   if (s.hint > 0) s.hint -= d;
   if (s.shake > 0) s.shake = Math.max(0, s.shake - d * 26);
+  if (s.saveFlash > 0) s.saveFlash = Math.max(0, s.saveFlash - d);
+
+  /* 自动存档：游戏进行中每 4 秒写一次，刷新即续战 */
+  s.saveT += d;
+  if (s.saveT >= 4) { s.saveT = 0; if (saveGame(s)) s.saveFlash = 1.6; }
 
   /* 波次推进 */
   if (s.phase === 'prep') {
@@ -1203,11 +1286,12 @@ function menuRects() {
   const x0 = (W - (bw * 4 + gap * 3)) / 2;
   return {
     btns: [
-      { x: x0, y: 386, w: bw, h: bh, mode: 'easy' },
-      { x: x0 + bw + gap, y: 386, w: bw, h: bh, mode: 'normal' },
-      { x: x0 + (bw + gap) * 2, y: 386, w: bw, h: bh, mode: 'hard' },
-      { x: x0 + (bw + gap) * 3, y: 386, w: bw, h: bh, mode: 'endless' }
-    ]
+      { x: x0, y: 446, w: bw, h: bh, mode: 'easy' },
+      { x: x0 + bw + gap, y: 446, w: bw, h: bh, mode: 'normal' },
+      { x: x0 + (bw + gap) * 2, y: 446, w: bw, h: bh, mode: 'hard' },
+      { x: x0 + (bw + gap) * 3, y: 446, w: bw, h: bh, mode: 'endless' }
+    ],
+    continueBtn: { x: (W - 320) / 2, y: 396, w: 320, h: 40 }
   };
 }
 function overRects() {
@@ -1279,6 +1363,13 @@ function drawHUD(ctx, s) {
   }
   txt(ctx, s.phase === 'prep' ? ('下一波 ' + Math.ceil(s.prepLeft) + 's') : '交战中',
     420 + bw + 10, 38, 12, s.phase === 'prep' ? C.dim : '#f4c451', 'left', 600);
+
+  // 自动存档提示
+  if (s.saveFlash > 0) {
+    ctx.globalAlpha = Math.min(1, s.saveFlash);
+    txt(ctx, '已存档 ✓', 700, 30, 12, '#7dffa8', 'left', 700);
+    ctx.globalAlpha = 1;
+  }
 
   // 按钮
   function btn(r, label, active) {
@@ -1472,6 +1563,19 @@ function drawMenu(ctx, s) {
   ];
   for (let i = 0; i < tips.length; i++) txt(ctx, tips[i], W / 2, 284 + i * 20, 12.5, '#8aa6b4', 'center', 500);
 
+  // 续战按钮：仅存在存档时出现
+  const info = saveInfo();
+  if (info) {
+    const cb = menuRects().continueBtn;
+    const hot = s.menuHover === 'continue';
+    rr(ctx, cb.x, cb.y, cb.w, cb.h, 10);
+    ctx.fillStyle = hot ? '#2c6f4a' : '#1f4e3a';
+    ctx.fill();
+    ctx.strokeStyle = hot ? '#7dffa8' : '#3f8f63'; ctx.lineWidth = 2; ctx.stroke();
+    const label = '继续游戏 · ' + DIFF[info.mode].label + ' · 第 ' + info.wave + ' 波';
+    txt(ctx, label, cb.x + cb.w / 2, cb.y + 25, 16, '#eafff2', 'center', 700);
+  }
+
   const R = menuRects();
   for (let i = 0; i < R.btns.length; i++) {
     const b = R.btns[i], d = DIFF[b.mode];
@@ -1490,8 +1594,8 @@ function drawMenu(ctx, s) {
       txt(ctx, best > 0 ? '最佳纪录：第 ' + best + ' 波' : '暂无纪录', b.x + b.w / 2, b.y + 89, 9.5, '#f4c451', 'center', 600);
     }
   }
-  txt(ctx, '快捷键 1-6 选塔 · U 升级 · X 出售 · 空格 暂停 · R 重开', W / 2, 540, 11.5, '#5d7683', 'center', 500);
-  txt(ctx, '全部图形由代码绘制，无外部素材', W / 2, 566, 10.5, '#445c68', 'center', 500);
+  txt(ctx, '快捷键 1-4 选难度 · C 继续游戏 · 1-6 选塔 · U 升级 · X 出售 · 空格 暂停 · R 重开', W / 2, 562, 11.5, '#5d7683', 'center', 500);
+  txt(ctx, '全部图形由代码绘制，无外部素材；对局自动存档，关闭网页也能续战', W / 2, 586, 10.5, '#445c68', 'center', 500);
   ctx.restore();
 }
 
@@ -1598,7 +1702,7 @@ function handleClick(s, x, y) {
 
   // 顶栏按钮
   if (inRect(R.speed, x, y)) { s.speed = s.speed === 1 ? 2 : (s.speed === 2 ? 3 : 1); return; }
-  if (inRect(R.pause, x, y)) { s.paused = !s.paused; return; }
+  if (inRect(R.pause, x, y)) { s.paused = !s.paused; if (s.paused) saveGame(s); return; }
   if (inRect(R.mute, x, y)) { muted = !muted; return; }
 
   // 暂停时只允许顶栏按钮，禁止建造/升级/出售/召唤等游戏操作
@@ -1665,6 +1769,7 @@ function bindInput(canvas, getState) {
     const p = toLocal(ev);
     if (s.scene === 'menu') {
       const R = menuRects();
+      if (hasSave() && inRect(R.continueBtn, p.x, p.y)) { startContinue(); return; }
       for (let i = 0; i < R.btns.length; i++) {
         if (inRect(R.btns[i], p.x, p.y)) { startNewRun(R.btns[i].mode); return; }
       }
@@ -1685,6 +1790,7 @@ function bindInput(canvas, getState) {
     if (s.scene === 'menu') {
       const R = menuRects();
       s.menuHover = null;
+      if (hasSave() && inRect(R.continueBtn, p.x, p.y)) s.menuHover = 'continue';
       for (let i = 0; i < R.btns.length; i++) if (inRect(R.btns[i], p.x, p.y)) s.menuHover = R.btns[i].mode;
     }
   });
@@ -1703,7 +1809,7 @@ function bindInput(canvas, getState) {
     const k = ev.key.toLowerCase();
     if (k === ' ' || k === 'p') {
       ev.preventDefault();
-      if (s.scene === 'play') s.paused = !s.paused;
+      if (s.scene === 'play') { s.paused = !s.paused; if (s.paused) saveGame(s); }
       return;
     }
     if (s.scene === 'menu') {
@@ -1711,6 +1817,7 @@ function bindInput(canvas, getState) {
       if (k === '2') startNewRun('normal');
       if (k === '3') startNewRun('hard');
       if (k === '4') startNewRun('endless');
+      if ((k === 'c' || k === '5') && hasSave()) startContinue();
       return;
     }
     if (s.scene === 'win' || s.scene === 'lose') {
@@ -1745,8 +1852,13 @@ let S = null;
 let canvasEl = null, ctxEl = null, DPR = 1;
 
 function startNewRun(mode) {
+  clearSave(); // 主动开新局即放弃旧存档
   S = newGame(mode);
   sfx(440, 0.1, 'sine', 0.05);
+}
+function startContinue() {
+  const s = loadGame();
+  if (s) { S = s; sfx(440, 0.1, 'sine', 0.05); }
 }
 function showMenu() {
   S = newGame('normal');
@@ -1804,6 +1916,7 @@ const api = {
   state: function () { return S; },
   click: handleClick, uiRects: uiRects, menuRects: menuRects, overRects: overRects,
   bindInput: bindInput, loadEndlessBest: loadEndlessBest, saveEndlessBest: saveEndlessBest,
+  saveGame: saveGame, loadGame: loadGame, hasSave: hasSave, clearSave: clearSave,
   boot: boot, muted: function (v) { if (v !== undefined) muted = !!v; return muted; }
 };
 if (typeof global.TD === 'undefined') global.TD = api;

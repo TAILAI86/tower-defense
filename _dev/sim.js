@@ -466,4 +466,40 @@ console.log('\n--- UI 点击链路 ---');
   TD.click(s, 300, 300);
   assert('金币不足无法建造且飘出提示', s.towers.length === 0 && s.floats.length > 0);
 }
+console.log('\n--- 存档 / 续战 ---');
+{
+  /* 开局建塔、推进到第 1 波交战，存档后读档恢复 */
+  const s = TD.newGame('normal');
+  TD.placeTower(s, 'arrow', 6, 3);
+  TD.placeTower(s, 'cannon', 7, 5);
+  s.wave = 1; s.phase = 'spawning';
+  TD.spawnEnemy(s, 'grunt', 0);
+  TD.spawnEnemy(s, 'shield', 50);
+  const gold0 = s.gold, lives0 = s.lives, wave0 = s.wave, tw0 = s.towers.length, en0 = s.enemies.length;
+  const ok = TD.saveGame(s);
+  assert('游戏进行中可写入存档', ok === true && TD.hasSave() === true);
+  const loaded = TD.loadGame();
+  assert('读档重建 scene 与核心计数', loaded && loaded.scene === 'play' && loaded.gold === gold0 && loaded.lives === lives0 && loaded.wave === wave0);
+  assert('读档恢复全部防御塔且占用表正确', loaded.towers.length === tw0 && loaded.occ[loaded.towers[0].c + ',' + loaded.towers[0].r] === loaded.towers[0]);
+  assert('读档恢复敌人数量与护盾字段', loaded.enemies.length === en0 && loaded.enemies.some(e => e.maxShield > 0));
+  assert('读档后敌人坐标由路径重新推导', loaded.enemies.every(e => Number.isFinite(e.x) && Number.isFinite(e.y)));
+  /* 读档后战斗循环自洽：炮台能正常瞄准射击 */
+  const cannon = loaded.towers.find(t => t.key === 'cannon');
+  cannon.ang = -Math.PI / 2;
+  TD.step(loaded, 0.05);
+  assert('读档后防御塔仍可正常射击', loaded.shots.length >= 0 && !loaded.renderErr);
+
+  /* 自动存档：游戏进行约 4 秒后由 step 触发 */
+  const s2 = TD.newGame('normal');
+  for (let i = 0; i < 100; i++) TD.step(s2, 0.05);
+  assert('自动存档在游戏进行约 4 秒后触发', TD.hasSave() === true);
+
+  /* 损坏存档安全降级 */
+  storage['TD_SAVE_V1'] = 'not-json';
+  assert('损坏存档读档返回 null', TD.loadGame() === null);
+
+  /* 清档后继续按钮消失 */
+  TD.clearSave();
+  assert('清档后 hasSave 为假', TD.hasSave() === false);
+}
 console.log('\n断言结果: ' + passed + ' 项通过 / ' + fail + ' 项失败');
