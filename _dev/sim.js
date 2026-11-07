@@ -30,8 +30,9 @@ function cx(c) { return c * CELL + CELL / 2; }
 function cy(r) { return 60 + r * CELL + CELL / 2; }
 
 /* 路径上某点距起点的距离（用于给建造点排序：沿路依次布置） */
-function distAlong(x, y) {
-  const pts = TD.PATH.pts;
+function distAlong(x, y, path) {
+  const P = path || TD.PATH;
+  const pts = P.pts;
   let best = { d: Infinity, along: 0 };
   for (let i = 1; i < pts.length; i++) {
     const ax = pts[i - 1].x, ay = pts[i - 1].y, bx = pts[i].x, by = pts[i].y;
@@ -41,26 +42,30 @@ function distAlong(x, y) {
     t = Math.max(0, Math.min(1, t));
     const px = ax + dx * t, py = ay + dy * t;
     const d = Math.hypot(px - x, py - y);
-    if (d < best.d) best = { d, along: TD.PATH.cum[i - 1] + Math.sqrt(len2) * t };
+    if (d < best.d) best = { d, along: P.cum[i - 1] + Math.sqrt(len2) * t };
   }
   return best;
 }
 
-let SPOTS = null;
+/* 每张地图的建塔点位各不相同，按关卡缓存 */
+const SPOTS = {};
 function spots(s) {
-  if (SPOTS) return SPOTS;
-  SPOTS = TD.buildableCells(s).map(p => {
-    const r = distAlong(cx(p.c), cy(p.r));
+  const key = s.level || 'main';
+  if (SPOTS[key]) return SPOTS[key];
+  const path = s.path || TD.PATH;
+  const list = TD.buildableCells(s).map(p => {
+    const r = distAlong(cx(p.c), cy(p.r), path);
     return { c: p.c, r: p.r, gap: r.d, along: r.along };
   }).filter(p => p.gap < CELL * 1.2)
     .sort((a, b) => a.along - b.along);
-  return SPOTS;
+  SPOTS[key] = list;
+  return list;
 }
 
-/* 一个有经验的玩家会用的建塔顺序 */
+/* 一个有经验的玩家会用的建塔顺序：先堆输出，中期再补支援型增幅塔 */
 const PLAN = ['arrow', 'frost', 'arrow', 'cannon', 'arrow', 'tesla', 'cannon', 'sniper',
   'frost', 'arrow', 'tesla', 'cannon', 'sniper', 'arrow', 'cannon', 'frost',
-  'tesla', 'sniper', 'cannon', 'arrow', 'tesla', 'cannon', 'frost', 'sniper',
+  'tesla', 'sniper', 'cannon', 'arrow', 'amp', 'cannon', 'frost', 'sniper',
   'cannon', 'arrow', 'tesla', 'cannon', 'sniper', 'arrow', 'cannon', 'frost'];
 
 function makeCtx() {
@@ -127,10 +132,10 @@ function run(mode, opts) {
 
 console.log('=== 机器人完整对局（像人一样沿路建塔）===');
 const campaign = {};
-for (const mode of ['easy', 'normal', 'hard']) {
+for (const mode of ['easy', 'normal', 'hard', 'forge']) {
   const r = run(mode);
   campaign[mode] = r;
-  console.log(`[${r.mode}] ${r.scene}  到第 ${r.wave}/${TD.WAVES.length} 波  剩余生命 ${r.lives}  得分 ${r.score}  塔 ${r.towers}  击杀 ${r.kills}  漏怪 ${r.leaked}  时长 ${r.simSec}s  渲染异常 ${r.renderErr || '无'}`);
+  console.log(`[${r.mode}] ${r.scene}  到第 ${r.wave}/${TD.totalWaves(mode)} 波  剩余生命 ${r.lives}  得分 ${r.score}  塔 ${r.towers}  击杀 ${r.kills}  漏怪 ${r.leaked}  时长 ${r.simSec}s  渲染异常 ${r.renderErr || '无'}`);
   console.log('    ' + r.timeline);
 }
 
@@ -157,7 +162,8 @@ function assert(name, cond) {
   else { fail++; process.exitCode = 1; }
 }
 assert('简单/普通/困难机器人均可通关 15 波', ['easy', 'normal', 'hard'].every(m => campaign[m].scene === 'win' && campaign[m].wave === 15));
-assert('完整对局与菜单渲染无异常', ['easy', 'normal', 'hard'].every(m => !campaign[m].renderErr) && !er.renderErr);
+assert('熔渊关卡机器人可通关 12 波', campaign.forge.scene === 'win' && campaign.forge.wave === TD.totalWaves('forge'));
+assert('完整对局与菜单渲染无异常', ['easy', 'normal', 'hard', 'forge'].every(m => !campaign[m].renderErr) && !er.renderErr);
 assert('不建塔必须失败', idle.scene === 'lose' && idle.lives === 0);
 {
   const s = TD.newGame('normal');
@@ -409,8 +415,7 @@ assert('不建塔必须失败', idle.scene === 'lose' && idle.lives === 0);
   /* 六塔布局不能重叠，右键不能误建塔 */
   const s = TD.newGame('normal');
   const R = TD.uiRects(s);
-  assert('六张塔卡完整且包含毒液塔', R.cards.length === 6 && R.cards[5].key === 'venom');
-  assert('升级/出售按钮不侵入波次面板', R.upBtn.x + R.upBtn.w <= R.wave.x && R.sellBtn.x + R.sellBtn.w <= R.wave.x);
+  assert('七张塔卡完整且包含毒液塔与增幅塔', R.cards.length === 7 && R.cards[5].key === 'venom' && R.cards[6].key === 'amp');  assert('升级/出售按钮不侵入波次面板', R.upBtn.x + R.upBtn.w <= R.wave.x && R.sellBtn.x + R.sellBtn.w <= R.wave.x);
   const handlers = {};
   const canvas = {
     addEventListener(name, fn) { handlers[name] = fn; },
@@ -426,6 +431,133 @@ assert('不建塔必须失败', idle.scene === 'lose' && idle.lives === 0);
   TD.bindInput(canvas, () => menu);
   winStub.listeners.keydown({ key: '4' });
   assert('主菜单快捷键 4 可进入无尽模式', TD.state() && TD.state().mode === 'endless');
+}
+console.log('\n--- 新增功能：增幅塔 / 狂怒兽 / 蜂群 / 熔渊关卡 ---');
+{
+  /* 增幅塔：光环提升范围内友军射速，超出范围不受影响 */
+  const s = TD.newGame('normal'); s.gold = 9999;
+  const a = TD.placeTower(s, 'amp', 6, 6);    // 增幅塔
+  const near = TD.placeTower(s, 'arrow', 6, 7); // 光环内
+  const far = TD.placeTower(s, 'arrow', 20, 11);// 光环外
+  assert('增幅塔可建造且自身不造成伤害', a.ok === true && TD.towerStats(a.tower, s).dmg === 0 && TD.towerStats(a.tower, s).rate === 0);
+  assert('增幅塔光环提升范围内友军射速', TD.towerStats(near.tower, s).rate > TD.TOWERS.arrow.rate);
+  assert('增幅塔光环不影响范围外友军', Math.abs(TD.towerStats(far.tower, s).rate - TD.TOWERS.arrow.rate) < 1e-9);
+  const boosted = TD.towerStats(near.tower, s).rate / TD.TOWERS.arrow.rate;
+  assert('增幅塔光环加成幅度符合数值表', Math.abs(boosted - (1 + TD.TOWERS.amp.ampMul)) < 1e-9);
+  /* 出售增幅塔后加成立即消失 */
+  TD.sellTower(s, a.tower);
+  assert('出售增幅塔后光环立刻失效', Math.abs(TD.towerStats(near.tower, s).rate - TD.TOWERS.arrow.rate) < 1e-9);
+  /* 升级增幅塔提升光环强度 */
+  const s2 = TD.newGame('normal'); s2.gold = 9999;
+  const a2 = TD.placeTower(s2, 'amp', 6, 6);
+  const t2 = TD.placeTower(s2, 'arrow', 6, 7);
+  const before = TD.towerStats(t2.tower, s2).rate;
+  TD.upgradeTower(s2, a2.tower);
+  assert('升级增幅塔光环变强', TD.towerStats(t2.tower, s2).rate > before);
+  /* 增幅塔不会开火 */
+  const s3 = TD.newGame('normal'); s3.gold = 9999; s3.wave = 1; s3.prepLeft = 9999;
+  TD.placeTower(s3, 'amp', 6, 7);
+  TD.spawnEnemy(s3, 'grunt', 300);
+  for (let i = 0; i < 120; i++) TD.step(s3, 1 / 60);
+  assert('增幅塔自身不开火', s3.shots.length === 0);
+}
+{
+  /* 狂怒兽：血量越低移动越快 */
+  const s = TD.newGame('normal'); s.wave = 1; s.prepLeft = 9999;
+  const e = TD.spawnEnemy(s, 'berserker', 500);
+  assert('狂怒兽可生成且带愤怒系数', !!e && e.rage > 0);
+  const d0 = e.dist;
+  TD.step(s, 0.05);
+  const fullSpeed = e.dist - d0;
+  e.hp = e.maxHp * 0.25;
+  const d1 = e.dist;
+  TD.step(s, 0.05);
+  const lowSpeed = e.dist - d1;
+  assert('狂怒兽残血时移动更快', lowSpeed > fullSpeed * 1.2);
+  /* 减速依然对狂怒兽生效 */
+  TD.applySlow(e, 0.5, 2);
+  const d2 = e.dist;
+  TD.step(s, 0.05);
+  assert('减速对狂怒兽同样生效', (e.dist - d2) < lowSpeed * 0.8);
+}
+{
+  /* 蜂群：数量多、脆弱，可被正常击杀 */
+  const s = TD.newGame('normal'); s.gold = 9999; s.wave = 1; s.prepLeft = 9999;
+  const b = TD.placeTower(s, 'cannon', 6, 7);
+  TD.upgradeTower(s, b.tower); TD.upgradeTower(s, b.tower);
+  for (let i = 0; i < 8; i++) TD.spawnEnemy(s, 'swarm', 500);
+  const k0 = s.stat.kills;
+  for (let i = 0; i < 60 * 20 && s.stat.kills < 8; i++) TD.step(s, 1 / 60);
+  assert('蜂群可被正常击杀', s.stat.kills >= 8 && s.stat.kills > k0);
+}
+{
+  /* 熔渊关卡：独立地图 + 独立波次表 */
+  const s = TD.newGame('forge');
+  assert('熔渊使用独立关卡地图', s.level === 'forge' && s.path !== TD.PATH && s.path.pts[0].y !== TD.PATH.pts[0].y);
+  assert('熔渊波次表独立于主线', TD.wavesOf('forge') === TD.FORGE_WAVES && TD.wavesOf('normal') === TD.WAVES);
+  assert('熔渊总波数为 12', TD.totalWaves('forge') === 12 && TD.totalWaves('normal') === 15);
+  assert('熔渊路径长度与主线相当', Math.abs(s.path.total - TD.PATH.total) < 80);
+  assert('熔渊基地与主线基地不同', s.base.cx !== TD.LEVELS.main.base.cx || s.base.cy !== TD.LEVELS.main.base.cy);
+  assert('熔渊敌人沿本关卡路径出生', Math.abs(s.path.pts[0].x - (-20)) < 1 && s.path.pts[0].y !== TD.PATH.pts[0].y);
+}
+{
+  /* 回归：炮台落点必须按当前关卡路径推算（换图后不能打到别的地图的坐标上） */
+  const s = TD.newGame('forge'); s.gold = 9999; s.wave = 1; s.prepLeft = 9999;
+  const b = TD.placeTower(s, 'cannon', 6, 7);
+  const e = TD.spawnEnemy(s, 'grunt', 300);
+  TD.step(s, 1 / 60);
+  const shot = s.shots.find(x => x.kind === 'shell');
+  const dForge = shot ? distAlong(shot.tx, shot.ty, s.path).d : Infinity;
+  const dMain = shot ? distAlong(shot.tx, shot.ty, TD.PATH).d : Infinity;
+  assert('炮台炮弹按本关卡路径推算落点', !!shot && dForge < 60 && dForge < dMain);
+}
+console.log('\n--- 缺陷回归 ---');
+{
+  /* 回归：漏怪判负时尸体必须清理干净，不能残留在结算画面里 */
+  const s = TD.newGame('normal');
+  s.lives = 1; s.phase = 'spawning'; s.wave = 1; s.spawnQueue = [];
+  s.enemies = [{ id: 1, type: 'grunt', x: 900, y: 320, dist: TD.PATH.total - 1,
+    hp: 10, maxHp: 10, speed: 60, slowT: 0, slowMul: 1, r: 11, armor: 0,
+    gold: 8, leak: 5, score: 10, color: '#fff', shape: 'circle', ang: 0, hitT: 0, dead: false, wob: 0 }];
+  for (let i = 0; i < 8; i++) TD.step(s, 1 / 60);
+  assert('漏怪判负后不残留尸体', s.scene === 'lose' && s.enemies.length === 0);
+}
+{
+  /* 回归：非法难度不能让游戏崩溃 */
+  assert('非法难度回退到普通', TD.newGame('不存在的难度').mode === 'normal');
+  assert('非法难度算血量不崩溃', typeof TD.hpScale(3, '不存在的难度') === 'number');
+}
+{
+  /* 回归：存档里的难度被篡改时，主菜单与读档都必须安全降级 */
+  const raw = JSON.stringify({ v: 1, mode: '被篡改', wave: 3, lives: 10 });
+  storage['TD_SAVE_V1'] = raw;
+  assert('被篡改的存档不显示继续按钮', TD.hasSave() === false && TD.saveInfo() === null);
+  assert('被篡改的存档读档安全降级为无存档', TD.loadGame() === null);
+  TD.clearSave();
+}
+{
+  /* 回归：数字键必须用数值比较（塔种变多后字符串比较会失效） */
+  const handlers = {};
+  const canvas = {
+    addEventListener(name, fn) { handlers[name] = fn; },
+    getBoundingClientRect() { return { left: 0, top: 0, width: TD.W, height: TD.H }; }
+  };
+  const s = TD.newGame('normal');
+  TD.bindInput(canvas, () => s);
+  winStub.listeners.keydown({ key: '7', preventDefault() {} });
+  assert('数字键 7 可选中第七种塔', s.pick === TD.TOWER_KEYS[6]);
+  winStub.listeners.keydown({ key: '9', preventDefault() {} });
+  assert('超出塔种数量的数字键不会误选', s.pick === TD.TOWER_KEYS[6]);
+  winStub.listeners.keydown({ preventDefault() {} });
+  assert('键盘事件缺少 key 字段不会崩溃', s.pick === TD.TOWER_KEYS[6]);
+}
+{
+  /* 回归：底部栏必须按塔种数量自适应，升级/出售按钮不得越界 */
+  const R = TD.uiRects(TD.newGame('normal'));
+  const last = R.cards[R.cards.length - 1];
+  assert('最后一张塔卡不与选中面板重叠', last.x + last.w <= R.panel.x);
+  assert('升级/出售按钮不侵入波次面板', R.upBtn.x + R.upBtn.w <= R.wave.x && R.sellBtn.x + R.sellBtn.w <= R.wave.x);
+  assert('塔卡宽度在合理区间内', R.cards.every(c => c.w >= 56 && c.w <= 78));
 }
 console.log('\n--- UI 点击链路 ---');
 {
