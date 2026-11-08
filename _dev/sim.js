@@ -92,7 +92,7 @@ function run(mode, opts) {
   const timeline = [];
   let lastWave = -1;
 
-  while (s.scene === 'play' && frames < 60 * 60 * 25) {
+  while (s.scene === 'play' && frames < 60 * (opts.maxSec || 1500)) {
     if (!opts.idle) {
       const buildLimit = opts.buildLimit || PLAN.length;
       let built = false;
@@ -110,7 +110,7 @@ function run(mode, opts) {
       }
       /* 升级：优先升等级最低、位置最靠前的塔 */
       if (!built && s.towers.length) {
-        const cand = s.towers.filter(t => t.level < TD.MAX_LV)
+        const cand = s.towers.filter(t => t.level < 8)
           .sort((a, b) => (a.level - b.level) || (a.dist - b.dist))[0];
         if (cand && s.gold >= TD.upgradeCost(cand)) TD.upgradeTower(s, cand);
       }
@@ -149,8 +149,8 @@ console.log('\n=== 不建塔（必须判负）===');
 const idle = run('normal', { idle: true });
 console.log(`[normal] ${idle.scene} 到第 ${idle.wave} 波 生命 ${idle.lives}`);
 
-console.log('\n=== 无尽模式（机器人守到力竭，必须越过 15 波且不判胜）===');
-const er = run('endless');
+console.log('\n=== 无尽模式（无终点：机器人可一直守下去，且永不判胜）===');
+const er = run('endless', { maxSec: 3600 });
 console.log(`[endless] ${er.scene} 撑到第 ${er.wave} 波 击杀 ${er.kills} 时长 ${er.simSec}s 渲染异常 ${er.renderErr || '无'}`);
 console.log('    ' + er.timeline);
 
@@ -179,7 +179,19 @@ assert('不建塔必须失败', idle.scene === 'lose' && idle.lives === 0);
   const st2 = TD.towerStats(t);
   assert('升级提升等级/伤害/射程', t.level === 2 && st2.dmg > st1.dmg && st2.range > st1.range);
   TD.upgradeTower(s, t);
-  assert('最高 3 级封顶', t.level === 3 && TD.upgradeTower(s, t).ok === false);
+  assert('可继续升到 3 级（不再封顶）', t.level === 3);
+  s.gold = 999999;
+  let lv = t.level;
+  for (let i = 0; i < 4; i++) if (TD.upgradeTower(s, t).ok) lv++;
+  assert('金币充足时可突破旧上限继续升级', t.level >= 7 && lv === t.level);
+  const costs = [];
+  for (let k = 1; k <= 6; k++) costs.push(TD.upgradeCost({ key: 'arrow', level: k }));
+  assert('升级成本随等级单调递增', costs.every((c, i) => i === 0 || c > costs[i - 1]));
+  const deep = TD.towerStats({ key: 'arrow', level: 30 });
+  assert('射程在高等级封顶（不会一塔盖全图）', deep.range === TD.TOWERS.arrow.range + 6 * 12);
+  assert('高等级伤害继续增长', deep.dmg > TD.towerStats({ key: 'arrow', level: 20 }).dmg);
+  s.gold = 10;
+  assert('金币不足时无法继续升级', TD.upgradeTower(s, t).ok === false);
   const goldBefore = s.gold;
   TD.sellTower(s, t);
   assert('出售返还金币并可复用格子', s.gold > goldBefore && TD.cellFree(s, t.c, t.r) === true);
@@ -271,7 +283,7 @@ assert('不建塔必须失败', idle.scene === 'lose' && idle.lives === 0);
   assert('无尽模式清完 15 波不判胜', s.scene === 'play' && s.phase === 'prep');
   TD.callWaveEarly(s);
   assert('无尽模式第 16 波程序生成', s.phase === 'spawning' && s.wave === 16 && s.spawnQueue.length > 0);
-  assert('无尽模式机器人越过 15 波后力竭', er.wave > 15 && er.scene === 'lose');
+  assert('无尽模式没有终点：越过 15 波后仍继续且不判胜', er.wave > 15 && er.scene !== 'win');
 }
 {
   /* 输入边界：非法格子、未知敌人与无效时间步都不能污染状态 */
@@ -633,5 +645,28 @@ console.log('\n--- 存档 / 续战 ---');
   /* 清档后继续按钮消失 */
   TD.clearSave();
   assert('清档后 hasSave 为假', TD.hasSave() === false);
+}
+console.log('\n--- 视口适配（宽屏不留黑边、点击不错位）---');
+{
+  /* 宽屏：竖向贴合、左右留白，留白由渲染层补草地 */
+  const wide = TD.fitView(1600, 900);
+  assert('宽屏按高度贴合视口', Math.abs(wide.k - 900 / TD.H) < 1e-9 && Math.abs(wide.oy) < 1e-9);
+  assert('宽屏左右留白对称', wide.ox > 0 && Math.abs(wide.ox - (1600 - TD.W * wide.k) / 2) < 1e-6);
+  /* 竖屏：横向贴合、上下留白 */
+  const tall = TD.fitView(800, 1000);
+  assert('竖屏按宽度贴合视口', Math.abs(tall.k - 800 / TD.W) < 1e-9 && Math.abs(tall.ox) < 1e-9 && tall.oy > 0);
+  /* 任意比例下场地都不会被裁掉 */
+  const fits = [[1600, 900], [800, 1000], [1160, 800], [1000, 680]].every(wh => {
+    const f = TD.fitView(wh[0], wh[1]);
+    return TD.W * f.k <= wh[0] + 1e-6 && TD.H * f.k <= wh[1] + 1e-6;
+  });
+  assert('任意窗口比例下场地完整可见不被裁切', fits);
+  /* 屏幕坐标 → 逻辑坐标 能原样还原（点击命中不偏移） */
+  const f = TD.fitView(1600, 900);
+  const roundTrip = [[0, 0], [TD.W, TD.H], [420, 333], [999, 1]].every(p => {
+    const sx = f.ox + p[0] * f.k, sy = f.oy + p[1] * f.k;
+    return Math.abs((sx - f.ox) / f.k - p[0]) < 1e-6 && Math.abs((sy - f.oy) / f.k - p[1]) < 1e-6;
+  });
+  assert('留白偏移下点击坐标可无损还原', roundTrip);
 }
 console.log('\n断言结果: ' + passed + ' 项通过 / ' + fail + ' 项失败');

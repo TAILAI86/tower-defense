@@ -5,12 +5,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>星火防线 · 塔防</title>
 <style>
-  html, body { margin:0; height:100%; background:#0b1116; overflow:hidden;
+  html, body { margin:0; height:100%; background:#080e13; overflow:hidden;
     font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;
     -webkit-user-select:none; user-select:none; }
-  #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
-  #game { display:block; border-radius:12px; background:#122024;
-    box-shadow:0 24px 70px rgba(0,0,0,.65); touch-action:none; cursor:crosshair; }
+  /* 画布铺满视口：宽高比不匹配时由画布内部绘制边框底色，避免露出黑边 */
+  #wrap { position:fixed; inset:0; }
+  #game { display:block; width:100%; height:100%; background:#080e13;
+    touch-action:none; cursor:crosshair; }
 </style>
 </head>
 <body>
@@ -31,7 +32,11 @@ const FIELD_Y = HUD_H;
 const FIELD_H = ROWS * CELL;
 const BAR_Y = FIELD_Y + FIELD_H;
 const BAR_H = H - BAR_Y;
-const MAX_LV = 3;
+/* 防御塔可无限升级：MAX_LV 只是防数值溢出的安全阀，
+   实际限制来自指数增长的金币成本（约 10 级后就买不动了） */
+const MAX_LV = 99;
+/* 射程软上限：前 6 级每级 +12，之后只提升伤害与射速，避免后期一塔覆盖全图 */
+const MAX_RANGE_LV = 6;
 
 const C = {
   ink: '#e9f3f7', dim: '#9fb6c2', faint: '#6d8794',
@@ -385,6 +390,11 @@ function hpScale(wave, mode) {
   if (mode === 'endless' && wave > TOTAL_WAVES) sc *= 1 + 0.05 * (wave - TOTAL_WAVES);
   return sc;
 }
+/* 射程随等级增长：前 MAX_RANGE_LV 级每级 +12，之后封顶 */
+function rangeAt(key, level) {
+  const d = TOWERS[key];
+  return d.range + Math.min(Math.max(0, level - 1), MAX_RANGE_LV) * 12;
+}
 /* 增幅塔光环：累加范围内其他增幅塔提供的射速加成（自身不吃自己的加成） */
 function ampBoost(s, t) {
   if (!s || !s.towers) return 0;
@@ -394,7 +404,7 @@ function ampBoost(s, t) {
     if (a === t) continue;
     const d = TOWERS[a.key];
     if (!d || !d.ampMul) continue;
-    const ar = d.range + (a.level - 1) * 12;
+    const ar = rangeAt(a.key, a.level);
     if (dist2(a.x, a.y, t.x, t.y) <= ar * ar) m += d.ampMul * (1 + (a.level - 1) * 0.25);
   }
   return m;
@@ -404,21 +414,24 @@ function towerStats(t, s) {
   const amp = (d && d.ampMul) ? 0 : ampBoost(s, t);
   return {
     dmg: d.dmg * Math.pow(1.7, lv),
-    range: d.range + lv * 12,
-    rate: d.rate * Math.pow(1.15, lv) * (1 + amp),
+    range: rangeAt(t.key, t.level),
+    /* 前 5 级每级 +15% 射速，之后每级 +6%：无限升级时射速不至于失控 */
+    rate: d.rate * Math.pow(1.15, Math.min(lv, 5)) * Math.pow(1.06, Math.max(0, lv - 5)) * (1 + amp),
     amp: amp,
-    splash: d.splash * (1 + lv * 0.12),
+    splash: d.splash * (1 + Math.min(lv, 8) * 0.12),
     slow: d.slow || 0,
     slowDur: (d.slowDur || 0) * (1 + lv * 0.15),
     poisonDps: (d.poisonDps || 0) * Math.pow(1.7, lv),
     poisonDur: (d.poisonDur || 0) * (1 + lv * 0.15),
-    shred: (d.shred || 0) + lv * 0.02,
+    /* 破甲上限 60%，避免高等级把敌人护甲压成负数 */
+    shred: Math.min(0.6, (d.shred || 0) + lv * 0.02),
     shredDur: (d.shredDur || 0) * (1 + lv * 0.15)
   };
 }
+/* 升级成本随等级指数增长（与伤害成长同阶），因此「无限升级」仍受金币约束 */
 function upgradeCost(t) {
   const base = TOWERS[t.key].cost;
-  return Math.round(base * (t.level === 1 ? 0.85 : 1.45));
+  return Math.round(base * 0.85 * Math.pow(1.7, t.level - 1));
 }
 function sellValue(t) { return Math.floor(t.invested * 0.6); }
 function waveSummary(i, mode) {
@@ -480,9 +493,9 @@ function placeTower(s, key, c, r) {
 }
 function upgradeTower(s, t) {
   if (!t || s.occ[t.c + ',' + t.r] !== t || s.towers.indexOf(t) < 0) return { ok: false, why: '防御塔已不存在' };
-  if (t.level >= MAX_LV) return { ok: false, why: '已满级' };
+  if (t.level >= MAX_LV) return { ok: false, why: '已达等级上限' };
   const cost = upgradeCost(t);
-  if (s.gold < cost) return { ok: false, why: '金币不足' };
+  if (!Number.isFinite(cost) || s.gold < cost) return { ok: false, why: '金币不足' };
   s.gold -= cost;
   t.invested += cost;
   t.level++;
@@ -1131,12 +1144,24 @@ function drawTowerShape(ctx, key, x, y, ang, scale, level) {
   }
   ctx.restore();
 
-  // 等级点
-  for (let i = 0; i < level; i++) {
+  // 等级点（只画前 5 个，更高等级用数字标注，避免无限升级时点阵溢出）
+  const dots = Math.min(level, 5);
+  for (let i = 0; i < dots; i++) {
     ctx.beginPath();
     ctx.arc(x - 8 + i * 8, y + 17, 2.6, 0, 6.3);
     ctx.fillStyle = '#ffe9a8';
     ctx.fill();
+  }
+  if (level > 5) {
+    /* 高等级改用右上角数字徽标，点阵不再无限向右蔓延 */
+    ctx.font = 'bold 10px "Microsoft YaHei","PingFang SC",system-ui,sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(10,20,24,.85)';
+    ctx.strokeText(String(level), x + 11, y - 13);
+    ctx.fillStyle = '#ffe9a8';
+    ctx.fillText(String(level), x + 11, y - 13);
   }
 }
 
@@ -1591,18 +1616,17 @@ function drawBar(ctx, s) {
         p.x + 12, p.y + 38, 11, C.dim, 'left', 500, p.w - 24);
     }
 
-    // 升级按钮
+    // 升级按钮（无等级上限，金币够就能一直升）
     const ub = R.upBtn;
-    const maxed = t.level >= MAX_LV;
-    const cost = maxed ? 0 : upgradeCost(t);
-    const canUp = !maxed && s.gold >= cost;
+    const cost = upgradeCost(t);
+    const canUp = Number.isFinite(cost) && s.gold >= cost;
     rr(ctx, ub.x, ub.y, ub.w, ub.h, 8);
-    ctx.fillStyle = maxed ? '#2a2f33' : (canUp ? '#2f6b4a' : '#22333a');
+    ctx.fillStyle = canUp ? '#2f6b4a' : '#22333a';
     ctx.fill();
-    ctx.strokeStyle = maxed ? '#3a4449' : (canUp ? '#57d68a' : '#33474f');
+    ctx.strokeStyle = canUp ? '#57d68a' : '#33474f';
     ctx.stroke();
-    txt(ctx, maxed ? '已满级' : ('升级 ' + cost), ub.x + ub.w / 2, ub.y + ub.h / 2, 12.5,
-      maxed ? C.faint : (canUp ? '#d9ffe9' : C.faint), 'center', 700);
+    txt(ctx, '升级 ' + cost, ub.x + ub.w / 2, ub.y + ub.h / 2, 12.5,
+      canUp ? '#d9ffe9' : C.faint, 'center', 700, ub.w - 10);
 
     // 出售按钮
     const sb = R.sellBtn;
@@ -1611,7 +1635,7 @@ function drawBar(ctx, s) {
     ctx.fill();
     ctx.strokeStyle = '#5c3a41';
     ctx.stroke();
-    txt(ctx, '出售 +' + sellValue(t), sb.x + sb.w / 2, sb.y + sb.h / 2, 12.5, '#f0b8b8', 'center', 700);
+    txt(ctx, '出售 +' + sellValue(t), sb.x + sb.w / 2, sb.y + sb.h / 2, 12.5, '#f0b8b8', 'center', 700, sb.w - 10);
   } else {
     txt(ctx, '未选中防御塔', p.x + 12, p.y + 20, 13, C.dim, 'left', 700);
     txt(ctx, '点击场上已建造的塔即可查看', p.x + 12, p.y + 40, 11, C.faint, 'left', 500);
@@ -1717,7 +1741,7 @@ function drawMenu(ctx, s) {
   // 玩法要点
   const tips = [
     '① 点击下方卡片选塔，再点草地空位建造',
-    '② 点击已建造的塔可升级 / 出售',
+    '② 点击已建造的塔可升级 / 出售，塔可以无限升级（成本逐级上涨）',
     '③ 箭塔单体 · 炮台范围 · 霜塔减速 · 狙击远程 · 磁暴连锁 · 毒液腐蚀 · 增幅支援',
     '④ 分裂虫会钻出幼虫；医疗兵会治疗同伴；狂怒兽残血加速；蜂群数量惊人',
     '⑤ 撑完全部波次即胜利；无尽模式没有终点，只有纪录；熔渊是峡谷专属关卡'
@@ -1806,8 +1830,151 @@ function drawPause(ctx, s) {
 }
 
 /* ---------------- 主渲染 ---------------- */
+/* 视口留白处理：
+   ① 左右留白（宽屏）——草地棋盘格向外延伸、网格对齐，栏位横贯整窗，画面连成一整片；
+   ② 上下留白（竖屏）——场地居中作卡片，外围是带柔光的舞台底色。
+   两种情况下都不会露出纯黑的边条。 */
+function drawFrame(ctx, s) {
+  const vw = view.vw, vh = view.vh;
+  const k = view.k || 1;
+  const cs = CELL * k;
+  const sideBar = view.ox > 1;
+
+  /* 竖向留白：舞台底色 + 中心柔光，衬托居中的场地卡片 */
+  if (!sideBar) {
+    const g = ctx.createLinearGradient(0, 0, 0, vh);
+    g.addColorStop(0, '#172a31');
+    g.addColorStop(0.5, '#101d23');
+    g.addColorStop(1, '#0a141a');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, vw, vh);
+    const rg = ctx.createRadialGradient(vw / 2, vh * 0.46, 0, vw / 2, vh * 0.46, Math.max(vw, vh) * 0.62);
+    rg.addColorStop(0, 'rgba(100,172,144,.16)');
+    rg.addColorStop(0.55, 'rgba(52,112,112,.06)');
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, vw, vh);
+
+    /* 全屏遮罩同样盖住上下留白 */
+    if (s) {
+      let veil = null;
+      if (s.scene === 'menu') veil = 'rgba(8,15,19,.88)';
+      else if (s.scene === 'win' || s.scene === 'lose') veil = 'rgba(6,12,16,.82)';
+      else if (s.paused) veil = 'rgba(6,12,16,.72)';
+      if (veil) {
+        ctx.fillStyle = veil;
+        ctx.fillRect(0, 0, vw, vh);
+      }
+    }
+    return;
+  }
+
+  /* 横向留白：先是与场内同色的草地，再按同一相位把棋盘格铺出去 */
+  ctx.fillStyle = C.bgA;
+  ctx.fillRect(0, 0, vw, vh);
+  if (cs > 4) {
+    const c0 = Math.floor(-view.ox / cs) - 1;
+    const c1 = Math.ceil((vw - view.ox) / cs) + 1;
+    for (let r = 0; r < ROWS; r++) {
+      const y = view.oy + (FIELD_Y + r * CELL) * k;
+      for (let c = c0; c < c1; c++) {
+        ctx.fillStyle = ((((r + c) % 2) + 2) % 2 === 0) ? C.bgA : C.bgB;
+        ctx.fillRect(view.ox + c * cs, y, cs + 1, cs + 1);
+      }
+    }
+  }
+
+  /* 网格线继续向场地外延伸，与场内同相位 */
+  if (cs > 6) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, vw, vh);
+    ctx.rect(view.ox, view.oy, W * k, H * k); // 挖掉场地本身，只画外圈
+    ctx.clip('evenodd');
+    ctx.strokeStyle = 'rgba(20,44,28,.18)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = view.ox % cs; x < vw; x += cs) { ctx.moveTo(Math.round(x) + .5, 0); ctx.lineTo(Math.round(x) + .5, vh); }
+    for (let y = view.oy % cs; y < vh; y += cs) { ctx.moveTo(0, Math.round(y) + .5); ctx.lineTo(vw, Math.round(y) + .5); }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* 越靠近窗口边缘越暗：留白自然收进暗部，而不是一条硬边 */
+  const lg = ctx.createLinearGradient(0, 0, view.ox, 0);
+  lg.addColorStop(0, 'rgba(8,20,14,.62)');
+  lg.addColorStop(1, 'rgba(8,20,14,0)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(0, 0, view.ox, vh);
+  const rg2 = ctx.createLinearGradient(vw - view.ox, 0, vw, 0);
+  rg2.addColorStop(0, 'rgba(8,20,14,0)');
+  rg2.addColorStop(1, 'rgba(8,20,14,.62)');
+  ctx.fillStyle = rg2;
+  ctx.fillRect(vw - view.ox, 0, view.ox, vh);
+
+  /* 顶部 HUD 与底部操作栏横贯整个窗口，结构不断裂（菜单没有栏位，不延伸） */
+  if (!s || s.scene !== 'menu') {
+  const hg = ctx.createLinearGradient(0, view.oy, 0, view.oy + HUD_H * k);
+  hg.addColorStop(0, '#1b2f39');
+  hg.addColorStop(1, '#152730');
+  ctx.fillStyle = hg;
+  ctx.fillRect(0, view.oy, vw, HUD_H * k);
+  ctx.fillStyle = C.panel;
+  ctx.fillRect(0, view.oy + BAR_Y * k, vw, BAR_H * k + 1);
+  ctx.strokeStyle = '#2b4553';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, Math.round(view.oy + HUD_H * k) - .5);
+  ctx.lineTo(vw, Math.round(view.oy + HUD_H * k) - .5);
+  ctx.moveTo(0, Math.round(view.oy + BAR_Y * k) + .5);
+  ctx.lineTo(vw, Math.round(view.oy + BAR_Y * k) + .5);
+  ctx.stroke();
+  }
+
+  /* 菜单 / 结算 / 暂停这类全屏遮罩，也在留白区铺一层，
+     否则宽屏下会看到一个「暗盒」边框 */
+  if (s) {
+    let veil = null;
+    if (s.scene === 'menu') veil = 'rgba(8,15,19,.88)';
+    else if (s.scene === 'win' || s.scene === 'lose') veil = 'rgba(6,12,16,.82)';
+    else if (s.paused) veil = 'rgba(6,12,16,.72)';
+    if (veil) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, vw, vh);
+      ctx.rect(view.ox, view.oy, W * k, H * k);
+      ctx.clip('evenodd');
+      ctx.fillStyle = veil;
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
+  }
+}
+
 function draw(s, ctx) {
   ctx.save();
+  drawFrame(ctx, s);
+  ctx.save();
+  ctx.translate(view.ox, view.oy);
+  ctx.scale(view.k, view.k);
+  /* 横向留白时场地与外围已连成一整片，不再画卡片投影与圆角；
+     满幅时保留圆角 + 投影的卡片质感 */
+  const framed = view.ox <= 1 && view.oy <= 1;
+  const radius = framed ? 14 / view.k : 0;
+  ctx.save();
+  rr(ctx, 0, 0, W, H, radius);
+  if (framed) {
+    ctx.shadowColor = 'rgba(0,0,0,.72)';
+    ctx.shadowBlur = 46 / view.k;
+    ctx.shadowOffsetY = 16 / view.k;
+  }
+  ctx.fillStyle = '#122024';
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  rr(ctx, 0, 0, W, H, radius);
+  ctx.clip();
   ctx.clearRect(0, 0, W, H);
 
   if (s.scene === 'menu') {
@@ -1816,9 +1983,11 @@ function draw(s, ctx) {
     drawBase(ctx, s);
     drawMenu(ctx, s);
     ctx.restore();
+    ctx.restore();
     return;
   }
 
+  ctx.save();
   if (s.shake > 0) {
     ctx.translate((Math.random() - 0.5) * s.shake, (Math.random() - 0.5) * s.shake);
   }
@@ -1845,6 +2014,9 @@ function draw(s, ctx) {
   if (s.paused && s.scene === 'play') drawPause(ctx, s);
   if (s.scene === 'win') drawOver(ctx, s, true);
   if (s.scene === 'lose') drawOver(ctx, s, false);
+
+  ctx.restore();
+  ctx.restore();
 }
 
 /* =========================================================
@@ -1924,8 +2096,9 @@ function handleMove(s, x, y) {
 function bindInput(canvas, getState) {
   function toLocal(ev) {
     const r = canvas.getBoundingClientRect();
-    const sx = W / r.width, sy = H / r.height;
-    return { x: (ev.clientX - r.left) * sx, y: (ev.clientY - r.top) * sy };
+    /* 画布铺满视口，需要扣掉居中留白再按缩放比还原到逻辑坐标 */
+    const k = view.k || 1;
+    return { x: (ev.clientX - r.left - view.ox) / k, y: (ev.clientY - r.top - view.oy) / k };
   }
   canvas.addEventListener('pointerdown', function (ev) {
     // 右键只负责取消选择，不能先触发一次建造或按钮点击
@@ -2021,6 +2194,8 @@ function bindInput(canvas, getState) {
 /* ---------------- 启动 ---------------- */
 let S = null;
 let canvasEl = null, ctxEl = null, DPR = 1;
+/* 视口适配状态：k 缩放比，ox/oy 居中偏移，vw/vh 视口尺寸（CSS 像素） */
+const view = { k: 1, ox: 0, oy: 0, vw: W, vh: H, dpr: 1 };
 
 function startNewRun(mode) {
   clearSave(); // 主动开新局即放弃旧存档
@@ -2037,18 +2212,32 @@ function showMenu() {
   S.menuHover = null;
 }
 
-function resize(canvas) {
-  const pad = 24;
-  const vw = (global.innerWidth || W) - pad;
-  const vh = (global.innerHeight || H) - pad;
+/* 视口内等比适配：k 为缩放比，ox/oy 为居中偏移（逻辑坐标 → 视口像素） */
+/* 由视口尺寸算出等比适配参数（纯函数，便于测试）：
+   k 为缩放比，ox/oy 为居中偏移，逻辑坐标 x 对应视口 ox + x * k */
+function fitView(vw, vh) {
   const k = Math.min(vw / W, vh / H);
-  const cw = Math.max(320, Math.floor(W * k));
-  const ch = Math.floor(H * (cw / W));
-  canvas.style.width = cw + 'px';
-  canvas.style.height = ch + 'px';
-  DPR = Math.min(2, global.devicePixelRatio || 1);
-  canvas.width = Math.round(W * DPR);
-  canvas.height = Math.round(H * DPR);
+  return { k: k, ox: (vw - W * k) / 2, oy: (vh - H * k) / 2 };
+}
+
+function resize(canvas) {
+  const vw = Math.max(320, global.innerWidth || W);
+  const vh = Math.max(240, global.innerHeight || H);
+  const f = fitView(vw, vh);
+  const k = f.k;
+  /* 画布现在铺满视口，像素量随窗口增长：按总面积限一下 DPR，避免大屏掉帧 */
+  let dpr = Math.min(2, global.devicePixelRatio || 1);
+  const MAX_PIX = 4.2e6;
+  if (vw * vh * dpr * dpr > MAX_PIX) dpr = Math.max(1, Math.sqrt(MAX_PIX / (vw * vh)));
+  DPR = dpr;
+  view.k = k;
+  view.vw = vw; view.vh = vh; view.dpr = DPR;
+  view.ox = f.ox;
+  view.oy = f.oy;
+  canvas.style.width = vw + 'px';
+  canvas.style.height = vh + 'px';
+  canvas.width = Math.round(vw * DPR);
+  canvas.height = Math.round(vh * DPR);
 }
 
 function boot() {
@@ -2091,6 +2280,7 @@ const api = {
   state: function () { return S; },
   click: handleClick, uiRects: uiRects, menuRects: menuRects, overRects: overRects,
   bindInput: bindInput, loadEndlessBest: loadEndlessBest, saveEndlessBest: saveEndlessBest,
+  fitView: fitView, view: function () { return view; },
   saveGame: saveGame, loadGame: loadGame, hasSave: hasSave, clearSave: clearSave,
   saveInfo: saveInfo,
   boot: boot, muted: function (v) { if (v !== undefined) muted = !!v; return muted; }
