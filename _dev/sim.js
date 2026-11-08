@@ -669,4 +669,122 @@ console.log('\n--- 视口适配（宽屏不留黑边、点击不错位）---');
   });
   assert('留白偏移下点击坐标可无损还原', roundTrip);
 }
+console.log('\n--- 存档导出 / 导入 ---');
+{
+  /* 造一个有内容的局面：塔 + 敌人 + 特殊数值 */
+  const s = TD.newGame('hard');
+  TD.placeTower(s, 'sniper', 5, 2);
+  TD.placeTower(s, 'venom', 6, 2);
+  s.wave = 7; s.phase = 'spawning'; s.gold = 777; s.score = 1234;
+  s.autoUp = true; s.autoMode = 'lr'; s.autoOrigin = { c: 4, r: 3 };
+  TD.spawnEnemy(s, 'berserker', 30);
+  TD.spawnEnemy(s, 'mite', 60);
+
+  assert('导出码以 TD1: 开头', TD.encodeSaveCode({ v: 1, mode: 'hard', wave: 3, gold: 10, lives: 5, maxLives: 5, score: 0, towers: [], enemies: [] }).indexOf('TD1:') === 0);
+  /* 完整快照往返：先存盘再读出来编码 */
+  TD.saveGame(s);
+  const stored = TD.readStoredSave();
+  assert('本地存档可读出且结构合法', !!stored && TD.validateSnapshot(stored).ok === true);
+  const full = TD.encodeSaveCode(stored);
+  const back = TD.decodeSaveCode(full);
+  assert('存档码可完整往返', back.ok === true && back.snap.mode === 'hard' && back.snap.wave === 7 && back.snap.gold === 777);
+  assert('存档码保留防御塔与敌人', back.snap.towers.length === 2 && back.snap.enemies.length === 2);
+  assert('存档码保留自动升级设置', back.snap.autoUp === true && back.snap.autoMode === 'lr' && back.snap.autoOrigin.c === 4);
+
+  /* 校验和：改动一个字符就必须被拒绝 */
+  const tampered = full.slice(0, -3) + (full.slice(-3, -2) === 'A' ? 'B' : 'A') + full.slice(-2);
+  const bad = TD.decodeSaveCode(tampered);
+  assert('改动存档码会被校验拦下', bad.ok === false);
+
+  /* 结构非法的一律拒绝 */
+  assert('非法难度被拒绝', TD.decodeSaveCode(TD.encodeSaveCode({ v: 1, mode: 'nonexistent', wave: 1, gold: 0, lives: 1, maxLives: 1, score: 0, towers: [], enemies: [] })).ok === false);
+  assert('版本不符被拒绝', TD.decodeSaveCode(TD.encodeSaveCode({ v: 99, mode: 'hard', wave: 1, gold: 0, lives: 1, maxLives: 1, score: 0, towers: [], enemies: [] })).ok === false);
+  assert('空存档码被拒绝', TD.decodeSaveCode('').ok === false);
+  assert('乱码被拒绝', TD.decodeSaveCode('hello world').ok === false);
+  assert('未知塔类型被拒绝', TD.decodeSaveCode(TD.encodeSaveCode({ v: 1, mode: 'hard', wave: 1, gold: 0, lives: 1, maxLives: 1, score: 0, towers: [{ key: 'nope', c: 1, r: 1, level: 1 }], enemies: [] })).ok === false);
+
+  /* 导入：写盘后可续战 */
+  TD.clearSave();
+  const imp = TD.importSaveCode(full);
+  assert('导入合法存档码成功', imp.ok === true && TD.hasSave() === true);
+  const resumed = TD.loadGame();
+  assert('导入后可从存档点续战', !!resumed && resumed.wave === 7 && resumed.gold === 777 && resumed.towers.length === 2);
+  assert('导入的存档保留自动升级状态', resumed.autoUp === true && resumed.autoMode === 'lr');
+
+  /* base64 与 UTF-8 往返 */
+  assert('base64 编解码可还原中文', TD.utf8String(TD.b64decode(TD.b64encode('中文塔 ★ defense'))) === '中文塔 ★ defense');
+}
+console.log('\n--- 自动升级 ---');
+{
+  /* 智能模式：给足金币，应当自动把塔升上去，并且始终留足建塔钱 */
+  const s = TD.newGame('normal');
+  TD.placeTower(s, 'arrow', 5, 3);
+  TD.placeTower(s, 'arrow', 7, 3);
+  s.gold = 100000;
+  s.autoUp = true;
+  s.autoMode = 'smart';
+  for (let i = 0; i < 200; i++) TD.step(s, 0.05);
+  const lv = s.towers.map(t => t.level);
+  assert('智能模式会自动升级防御塔', lv.every(v => v > 1));
+  assert('自动升级保留建塔储备金币', s.gold >= TD.AUTO_RESERVE);
+  assert('自动升级不会超过等级上限', lv.every(v => v <= TD.MAX_LV));
+
+  /* 从左到右：靠左的塔应该先升满，左塔等级不低于右塔 */
+  const s2 = TD.newGame('normal');
+  const left = TD.placeTower(s2, 'arrow', 3, 3).tower;
+  const right = TD.placeTower(s2, 'arrow', 9, 3).tower;
+  s2.gold = 100000;
+  s2.autoUp = true;
+  s2.autoMode = 'lr';
+  for (let i = 0; i < 60; i++) TD.step(s2, 0.05);
+  assert('从左到右模式优先升级左边的塔', left.level >= right.level);
+
+  /* 从右到左：靠右的塔先升 */
+  const s3 = TD.newGame('normal');
+  const l3 = TD.placeTower(s3, 'arrow', 3, 3).tower;
+  const r3 = TD.placeTower(s3, 'arrow', 9, 3).tower;
+  s3.gold = 100000;
+  s3.autoUp = true;
+  s3.autoMode = 'rl';
+  for (let i = 0; i < 60; i++) TD.step(s3, 0.05);
+  assert('从右到左模式优先升级右边的塔', r3.level >= l3.level);
+
+  /* 扩散模式：以中心点为圆心，近的先升 */
+  const s4 = TD.newGame('normal');
+  /* 取两个合法空地：中心附近一个、离中心最远的一个 */
+  const cells4 = TD.buildableCells(s4).slice();
+  const c4 = cells4[0];
+  const center4 = { c: c4.c, r: c4.r };
+  const farCell = cells4.slice().sort((a, b) =>
+    ((b.c - center4.c) * (b.c - center4.c) + (b.r - center4.r) * (b.r - center4.r)) -
+    ((a.c - center4.c) * (a.c - center4.c) + (a.r - center4.r) * (a.r - center4.r)))[0];
+  const near = TD.placeTower(s4, 'arrow', center4.c, center4.r).tower;
+  const far = TD.placeTower(s4, 'arrow', farCell.c, farCell.r).tower;
+  s4.gold = 100000;
+  s4.autoUp = true;
+  s4.autoMode = 'radial';
+  s4.autoOrigin = { c: center4.c, r: center4.r };
+  for (let i = 0; i < 60; i++) TD.step(s4, 0.05);
+  assert('扩散模式优先升级靠近中心的塔', !!near && !!far && near.level >= far.level);
+  assert('扩散中心写入存档', (function () {
+    TD.saveGame(s4);
+    const l = TD.loadGame();
+    return l && l.autoOrigin && l.autoOrigin.c === center4.c && l.autoOrigin.r === center4.r;
+  })());
+
+  /* 顺序切换：智能 → 左→右 → 右→左 → 扩散 → 智能 */
+  const s5 = TD.newGame('normal');
+  const seq = [];
+  for (let i = 0; i < 5; i++) { TD.cycleAutoMode(s5); seq.push(s5.autoMode); }
+  assert('升级顺序可循环切换', seq.join(',') === 'lr,rl,radial,smart,lr');
+  assert('切换到扩散模式会请求点选中心', s5.autoMode !== 'radial' || s5.pickOrigin === true);
+
+  /* 自动升级关闭时不动塔 */
+  const s6 = TD.newGame('normal');
+  const t6 = TD.placeTower(s6, 'arrow', 5, 3).tower;
+  s6.gold = 100000;
+  s6.autoUp = false;
+  for (let i = 0; i < 60; i++) TD.step(s6, 0.05);
+  assert('关闭自动升级时防御塔等级不变', t6.level === 1);
+}
 console.log('\n断言结果: ' + passed + ' 项通过 / ' + fail + ' 项失败');

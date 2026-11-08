@@ -310,6 +310,8 @@ function snapshot(s) {
     gold: s.gold, lives: s.lives, maxLives: s.maxLives, score: s.score,
     wave: s.wave, phase: s.phase, prepTotal: s.prepTotal, prepLeft: s.prepLeft,
     spawnQueue: s.spawnQueue, spawnTimer: s.spawnTimer, nextId: s.nextId,
+    autoUp: !!s.autoUp, autoMode: s.autoMode || 'smart',
+    autoOrigin: s.autoOrigin ? { c: s.autoOrigin.c, r: s.autoOrigin.r } : null,
     stat: { kills: s.stat.kills, built: s.stat.built, leaked: s.stat.leaked, goldEarned: s.stat.goldEarned },
     towers: s.towers.map(function (t) {
       return { id: t.id, key: t.key, c: t.c, r: t.r, x: t.x, y: t.y, level: t.level, cd: t.cd, ang: t.ang, invested: t.invested, kills: t.kills };
@@ -365,6 +367,9 @@ function loadGame() {
     enemies: [], towers: [], shots: [], effects: [], floats: [],
     occ: {}, pick: null, sel: null, hover: { c: -1, r: -1 }, banner: null, hint: 0, shake: 0,
     saveT: 0, saveFlash: 0,
+    autoUp: !!snap.autoUp, autoMode: snap.autoMode || 'smart',
+    autoOrigin: snap.autoOrigin ? { c: snap.autoOrigin.c, r: snap.autoOrigin.r } : null,
+    pickOrigin: false, autoT: 0,
     stat: snap.stat || { kills: 0, built: 0, leaked: 0, goldEarned: 0 }
   };
   const byId = {};
@@ -379,6 +384,152 @@ function loadGame() {
     s.enemies.push(e);
   }
   return s;
+}
+
+/* ---------------- 存档导出 / 导入 ----------------
+   存档码格式：TD1:<FNV-1a 校验和>:<base64(UTF-8 JSON)>
+   导入时先验校验和再解析 JSON，避免"少复制一个字"读出一堆坏数据。
+   校验和只是防手抖，不做加密——存档码明文可见，别放敏感信息。 */
+const SAVE_CODE_TAG = 'TD1';
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function fnv1a(str) {
+  let h = 0x811c9dc5 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+function utf8Bytes(str) {
+  const out = [];
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    if (c < 0x80) out.push(c);
+    else if (c < 0x800) { out.push(0xc0 | (c >> 6)); out.push(0x80 | (c & 0x3f)); }
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+      const c2 = str.charCodeAt(++i);
+      const cp = 0x10000 + ((c - 0xd800) << 10) + (c2 - 0xdc00);
+      out.push(0xf0 | (cp >> 18));
+      out.push(0x80 | ((cp >> 12) & 0x3f));
+      out.push(0x80 | ((cp >> 6) & 0x3f));
+      out.push(0x80 | (cp & 0x3f));
+    } else { out.push(0xe0 | (c >> 12)); out.push(0x80 | ((c >> 6) & 0x3f)); out.push(0x80 | (c & 0x3f)); }
+  }
+  return out;
+}
+function utf8String(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length;) {
+    const b = bytes[i++];
+    let cp;
+    if (b < 0x80) cp = b;
+    else if (b < 0xe0) cp = ((b & 0x1f) << 6) | (bytes[i++] & 0x3f);
+    else if (b < 0xf0) cp = ((b & 0x0f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f);
+    else cp = ((b & 0x07) << 18) | ((bytes[i++] & 0x3f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f);
+    if (cp > 0xffff) {
+      cp -= 0x10000;
+      out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+    } else out += String.fromCharCode(cp);
+  }
+  return out;
+}
+function b64encode(str) {
+  const bytes = utf8Bytes(str);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];
+    out += B64_CHARS[b0 >> 2];
+    out += B64_CHARS[((b0 & 3) << 4) | (b1 === undefined ? 0 : (b1 >> 4))];
+    out += (b1 === undefined) ? '=' : B64_CHARS[((b1 & 15) << 2) | (b2 === undefined ? 0 : (b2 >> 6))];
+    out += (b2 === undefined) ? '=' : B64_CHARS[b2 & 63];
+  }
+  return out;
+}
+function b64decode(str) {
+  const clean = String(str).replace(/[^A-Za-z0-9+/=]/g, '');
+  const bytes = [];
+  let acc = 0, bits = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i];
+    if (ch === '=') break;
+    const v = B64_CHARS.indexOf(ch);
+    if (v < 0) continue;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) { bits -= 8; bytes.push((acc >> bits) & 255); }
+  }
+  return bytes;
+}
+function encodeSaveCode(snap) {
+  const body = JSON.stringify(snap);
+  return SAVE_CODE_TAG + ':' + fnv1a(body).toString(16) + ':' + b64encode(body);
+}
+/* 校验存档结构：任何一项不合法都不允许进游戏，避免半截数据把状态机搞崩 */
+function validateSnapshot(snap) {
+  if (!snap || typeof snap !== 'object') return { ok: false, err: '存档内容为空' };
+  if (snap.v !== 1) return { ok: false, err: '存档版本不兼容（需要 v1 存档）' };
+  if (!DIFF[snap.mode]) return { ok: false, err: '存档里的难度 / 关卡无效' };
+  if (!Array.isArray(snap.towers) || !Array.isArray(snap.enemies)) return { ok: false, err: '存档内容不完整' };
+  const nums = ['gold', 'lives', 'maxLives', 'score', 'wave'];
+  for (let i = 0; i < nums.length; i++) {
+    const v = snap[nums[i]];
+    if (typeof v !== 'number' || !isFinite(v)) return { ok: false, err: '存档数值异常：' + nums[i] };
+  }
+  if (snap.wave < 0 || snap.wave > 9999) return { ok: false, err: '存档波次异常' };
+  if (snap.gold < 0 || snap.lives < 0) return { ok: false, err: '存档数值异常（金币 / 生命为负）' };
+  for (let i = 0; i < snap.towers.length; i++) {
+    const t = snap.towers[i];
+    if (!t || !TOWERS[t.key]) return { ok: false, err: '存档里有未知防御塔类型' };
+    if (!isFinite(t.c) || !isFinite(t.r) || !isFinite(t.level) || t.level < 1) return { ok: false, err: '存档里的防御塔数据异常' };
+  }
+  for (let i = 0; i < snap.enemies.length; i++) {
+    const e = snap.enemies[i];
+    if (!e || !ENEMIES[e.type]) return { ok: false, err: '存档里有未知敌人类型' };
+    if (!isFinite(e.dist) || e.dist < 0) return { ok: false, err: '存档里的敌人数据异常' };
+  }
+  return { ok: true };
+}
+function decodeSaveCode(text) {
+  const raw = String(text == null ? '' : text).trim().replace(/\s+/g, '');
+  if (!raw) return { ok: false, err: '请先粘贴存档码' };
+  const parts = raw.split(':');
+  if (parts.length !== 3 || parts[0] !== SAVE_CODE_TAG) {
+    return { ok: false, err: '这不是有效的存档码（应以 TD1: 开头）' };
+  }
+  let body;
+  try { body = utf8String(b64decode(parts[2])); } catch (e) { return { ok: false, err: '存档码解码失败' }; }
+  if (fnv1a(body).toString(16) !== String(parts[1]).toLowerCase()) {
+    return { ok: false, err: '校验失败，存档码可能在复制时缺字或被改动' };
+  }
+  let snap;
+  try { snap = JSON.parse(body); } catch (e) { return { ok: false, err: '存档码内容不是合法数据' }; }
+  const check = validateSnapshot(snap);
+  if (!check.ok) return check;
+  return { ok: true, snap: snap };
+}
+/* 读取本地存档（自动存档那份），结构不合法视为没有存档 */
+function readStoredSave() {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const snap = JSON.parse(localStorage.getItem(SAVE_KEY));
+    return validateSnapshot(snap).ok ? snap : null;
+  } catch (e) { return null; }
+}
+/* 导入：校验通过后写进本地存档槽，随后即可续战 */
+function importSaveCode(text) {
+  const res = decodeSaveCode(text);
+  if (!res.ok) return res;
+  if (typeof localStorage === 'undefined') return { ok: false, err: '当前环境不支持本地存档' };
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(res.snap)); }
+  catch (e) { return { ok: false, err: '写入本地存档失败（可能是隐私模式或空间已满）' }; }
+  return { ok: true, snap: res.snap };
+}
+function saveCodeFilename(snap) {
+  const d = new Date();
+  const pad = function (n) { return (n < 10 ? '0' : '') + n; };
+  const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes());
+  return 'tower-defense-' + (snap.mode || 'save') + '-w' + (snap.wave || 0) + '-' + stamp + '.txt';
 }
 
 /* ---------------- 数值工具 ---------------- */
@@ -455,6 +606,7 @@ function newGame(mode) {
     occ: {}, pick: null, sel: null, hover: { c: -1, r: -1 },
     banner: null, hint: 9, shake: 0, nextId: 1,
     saveT: 0, saveFlash: 0,
+    autoUp: false, autoMode: 'smart', autoOrigin: null, pickOrigin: false, autoT: 0,
     stat: { kills: 0, built: 0, leaked: 0, goldEarned: 0 }
   };
 }
@@ -491,7 +643,7 @@ function placeTower(s, key, c, r) {
   sfx(520, 0.09, 'triangle', 0.05);
   return { ok: true, tower: t };
 }
-function upgradeTower(s, t) {
+function upgradeTower(s, t, silent) {
   if (!t || s.occ[t.c + ',' + t.r] !== t || s.towers.indexOf(t) < 0) return { ok: false, why: '防御塔已不存在' };
   if (t.level >= MAX_LV) return { ok: false, why: '已达等级上限' };
   const cost = upgradeCost(t);
@@ -501,8 +653,97 @@ function upgradeTower(s, t) {
   t.level++;
   t.flash = 0.3;
   addEffect(s, { kind: 'ring', x: t.x, y: t.y, r0: 6, r1: 40, color: TOWERS[t.key].color, life: 0.4 });
-  sfx(700, 0.12, 'triangle', 0.055);
+  if (!silent) sfx(700, 0.12, 'triangle', 0.055);
   return { ok: true };
+}
+
+/* ---------------- 自动升级 ----------------
+   自动把"多余金币"投进防御塔：始终预留一座最贵塔的造价，
+   保证自动升级不会让玩家连新建一座塔的钱都没有。 */
+const AUTO_RESERVE = 150;
+/* 四种升级顺序：智能（性价比最高）/ 从左到右 / 从右到左 / 从一个点扩散 */
+const AUTO_MODES = [
+  { id: 'smart', label: '智能', desc: '优先升级每金币收益最高的塔' },
+  { id: 'lr', label: '左→右', desc: '按列从左往右逐座升级' },
+  { id: 'rl', label: '右→左', desc: '按列从右往左逐座升级' },
+  { id: 'radial', label: '扩散', desc: '从指定中心点向四周扩散升级' }
+];
+function autoModeLabel(id) {
+  for (let i = 0; i < AUTO_MODES.length; i++) if (AUTO_MODES[i].id === id) return AUTO_MODES[i].label;
+  return '智能';
+}
+/* 这次升级能带来多少"有效输出/秒"的提升，用于智能模式排序 */
+function towerValueGain(t, s) {
+  const d = TOWERS[t.key];
+  const before = towerStats(t, s);
+  const after = towerStats({ key: t.key, level: t.level + 1, x: t.x, y: t.y }, s);
+  let gain = (after.dmg * after.rate) - (before.dmg * before.rate);
+  if (d.splash) gain *= 1 + d.splash / 140;   /* 范围塔一次打多只 */
+  if (d.chain) gain *= 1 + d.chain * 0.35;    /* 连锁塔能跳多目标 */
+  if (d.poisonDps) gain += (after.poisonDps - before.poisonDps) * 2.5; /* 持续伤害 */
+  if (d.ampMul) gain = 24 + 12 * t.level;     /* 支援塔不输出，按经验估值 */
+  else if (d.slow) gain = 16 + 6 * t.level;    /* 减速塔同理 */
+  return Math.max(0.01, gain);
+}
+/* 按当前模式给塔排序（扩散模式以 autoOrigin 为圆心，距离近的先升） */
+function autoUpgradeOrder(s) {
+  const list = s.towers.slice();
+  if (s.autoMode === 'lr') {
+    list.sort(function (a, b) { return (a.c - b.c) || (a.r - b.r); });
+  } else if (s.autoMode === 'rl') {
+    list.sort(function (a, b) { return (b.c - a.c) || (a.r - b.r); });
+  } else if (s.autoMode === 'radial') {
+    const o = s.autoOrigin || { c: 0, r: 0 };
+    list.sort(function (a, b) {
+      const da = (a.c - o.c) * (a.c - o.c) + (a.r - o.r) * (a.r - o.r);
+      const db = (b.c - o.c) * (b.c - o.c) + (b.r - o.r) * (b.r - o.r);
+      return (da - db) || (a.c - b.c) || (a.r - b.r);
+    });
+  }
+  return list;
+}
+function setAutoMode(s, id) {
+  if (!s) return;
+  for (let i = 0; i < AUTO_MODES.length; i++) if (AUTO_MODES[i].id === id) s.autoMode = id;
+  /* 扩散模式需要中心点：还没设置过就直接进入点选状态 */
+  if (s.autoMode === 'radial' && !s.autoOrigin) s.pickOrigin = true;
+}
+/* 自动升级节拍：每 0.25 秒检查一次，一次最多升 4 座，避免一瞬间把金币全烧光 */
+function autoUpgradeTick(s, dt) {
+  if (!s || !s.autoUp || s.scene !== 'play') return;
+  s.autoT = (s.autoT || 0) - dt;
+  if (s.autoT > 0) return;
+  s.autoT = 0.25;
+  const list = autoUpgradeOrder(s);
+  let done = 0;
+  while (done < 4) {
+    let target = null;
+    if (s.autoMode === 'smart') {
+      let best = 0;
+      for (let i = 0; i < list.length; i++) {
+        const t = list[i];
+        if (t.level >= MAX_LV) continue;
+        const cost = upgradeCost(t);
+        if (s.gold - cost < AUTO_RESERVE) continue;
+        const score = towerValueGain(t, s) / cost;
+        if (score > best) { best = score; target = t; }
+      }
+    } else {
+      /* 有序模式：按顺序取第一座升得起、且不动用建塔储备的塔 */
+      for (let i = 0; i < list.length; i++) {
+        const t = list[i];
+        if (t.level >= MAX_LV) continue;
+        const cost = upgradeCost(t);
+        if (s.gold - cost < AUTO_RESERVE) continue;
+        target = t;
+        break;
+      }
+    }
+    if (!target) break;
+    if (!upgradeTower(s, target, true).ok) break;
+    addFloat(s, target.x, target.y - 16, 'Lv.' + target.level, C.good);
+    done++;
+  }
 }
 function sellTower(s, t) {
   if (!t || s.occ[t.c + ',' + t.r] !== t || s.towers.indexOf(t) < 0) return { ok: false, why: '防御塔已不存在' };
@@ -783,6 +1024,9 @@ function step(s, dt) {
   /* 自动存档：游戏进行中每 4 秒写一次，刷新即续战 */
   s.saveT += d;
   if (s.saveT >= 4) { s.saveT = 0; if (saveGame(s)) s.saveFlash = 1.6; }
+
+  /* 自动升级：把多余金币按所选顺序投进防御塔 */
+  autoUpgradeTick(s, dt);
 
   /* 波次推进 */
   if (s.phase === 'prep') {
@@ -1447,7 +1691,9 @@ function uiRects(s) {
     sellBtn: { x: px + 10, y: BAR_Y + 52, w: 104, h: 30 },
     speed: { x: 818, y: 12, w: 58, h: 34 },
     pause: { x: 882, y: 12, w: 58, h: 34 },
-    mute: { x: 946, y: 12, w: 44, h: 34 }
+    mute: { x: 946, y: 12, w: 44, h: 34 },
+    auto: { x: 328, y: 15, w: 40, h: 27 },
+    autoMode: { x: 372, y: 15, w: 42, h: 27 }
   };
 }
 function menuRects() {
@@ -1461,13 +1707,25 @@ function menuRects() {
       { x: x0 + (bw + gap) * 3, y: 446, w: bw, h: bh, mode: 'endless' },
       { x: x0 + (bw + gap) * 4, y: 446, w: bw, h: bh, mode: 'forge' }
     ],
-    continueBtn: { x: (W - 320) / 2, y: 396, w: 320, h: 40 }
+    continueBtn: { x: (W - 320) / 2, y: 396, w: 320, h: 40 },
+    exportBtn: { x: W / 2 - 206, y: 598, w: 196, h: 30 },
+    importBtn: { x: W / 2 + 10, y: 598, w: 196, h: 30 }
   };
 }
 function overRects() {
   return {
     restart: { x: W / 2 - 108, y: 486, w: 216, h: 48 },
     menu: { x: W / 2 - 108, y: 546, w: 216, h: 42 }
+  };
+}
+/* 暂停面板上的三个按钮：导出当前进度 / 导入存档 / 自动升级设置 */
+function pauseRects() {
+  const w = 200, h = 36, gap = 12;
+  const x0 = W / 2 - (w * 3 + gap * 2) / 2;
+  return {
+    exportBtn: { x: x0, y: H / 2 + 26, w: w, h: h },
+    importBtn: { x: x0 + (w + gap), y: H / 2 + 26, w: w, h: h },
+    autoBtn: { x: x0 + (w + gap) * 2, y: H / 2 + 26, w: w, h: h }
   };
 }
 function inRect(r, x, y) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
@@ -1508,14 +1766,14 @@ function drawHUD(ctx, s) {
     const a = -Math.PI / 2 + i * Math.PI * 2 / 5;
     const b = a + Math.PI / 5;
     const r1 = 9, r2 = 4;
-    if (i === 0) ctx.moveTo(286 + Math.cos(a) * r1, 30 + Math.sin(a) * r1);
-    else ctx.lineTo(286 + Math.cos(a) * r1, 30 + Math.sin(a) * r1);
-    ctx.lineTo(286 + Math.cos(b) * r2, 30 + Math.sin(b) * r2);
+    if (i === 0) ctx.moveTo(258 + Math.cos(a) * r1, 30 + Math.sin(a) * r1);
+    else ctx.lineTo(258 + Math.cos(a) * r1, 30 + Math.sin(a) * r1);
+    ctx.lineTo(258 + Math.cos(b) * r2, 30 + Math.sin(b) * r2);
   }
   ctx.closePath();
   ctx.fillStyle = C.score; ctx.fill();
-  txt(ctx, '' + s.score, 302, 30, 16, C.ink, 'left', 700);
-  txt(ctx, '得分', 302, 45, 10, C.faint, 'left', 500);
+  txt(ctx, '' + s.score, 274, 30, 16, C.ink, 'left', 700);
+  txt(ctx, '得分', 274, 45, 10, C.faint, 'left', 500);
 
   // 波次
   const total = totalWaves(s.mode);
@@ -1538,7 +1796,7 @@ function drawHUD(ctx, s) {
   // 自动存档提示
   if (s.saveFlash > 0) {
     ctx.globalAlpha = Math.min(1, s.saveFlash);
-    txt(ctx, '已存档 ✓', 700, 30, 12, '#7dffa8', 'left', 700);
+    txt(ctx, '已存档 ✓', 756, 30, 12, '#7dffa8', 'left', 700);
     ctx.globalAlpha = 1;
   }
 
@@ -1551,6 +1809,17 @@ function drawHUD(ctx, s) {
     ctx.lineWidth = 1.2; ctx.stroke();
     txt(ctx, label, r.x + r.w / 2, r.y + r.h / 2, 13, C.ink, 'center', 700);
   }
+  /* 自动升级：开关 + 升级顺序（智能 / 左→右 / 右→左 / 扩散） */
+  function miniBtn(r, label, active, hot) {
+    rr(ctx, r.x, r.y, r.w, r.h, 7);
+    ctx.fillStyle = active ? '#2f6b4a' : (hot ? '#20414f' : '#1b2f39');
+    ctx.fill();
+    ctx.strokeStyle = active ? '#7dffa8' : (hot ? '#6ecbff' : '#31505f');
+    ctx.lineWidth = 1.2; ctx.stroke();
+    txt(ctx, label, r.x + r.w / 2, r.y + r.h / 2, 11.5, active ? '#eafff2' : C.dim, 'center', 700);
+  }
+  miniBtn(R.auto, s.autoUp ? '自动开' : '自动', !!s.autoUp, s.autoHover === 'auto');
+  miniBtn(R.autoMode, autoModeLabel(s.autoMode), s.autoMode !== 'smart', s.autoHover === 'autoMode');
   btn(R.speed, s.speed + '×', s.speed > 1);
   btn(R.pause, s.paused ? '继续' : '暂停', s.paused);
   btn(R.mute, muted ? '静音' : '音效', false);
@@ -1781,7 +2050,25 @@ function drawMenu(ctx, s) {
       txt(ctx, '熔岩峡谷 · ' + totalWaves('forge') + ' 波', b.x + b.w / 2, b.y + 89, 9.5, '#ff9a6b', 'center', 600);
     }
   }
-  txt(ctx, '快捷键 1-5 选难度 · C 继续游戏 · 1-' + TOWER_KEYS.length + ' 选塔 · U 升级 · X 出售 · 空格 暂停 · R 重开', W / 2, 562, 11.5, '#5d7683', 'center', 500);
+
+  // 存档导出 / 导入
+  const sBtns = [
+    { r: R.exportBtn, label: '导出存档', key: 'export', dim: !info },
+    { r: R.importBtn, label: '导入存档', key: 'import', dim: false }
+  ];
+  for (let i = 0; i < sBtns.length; i++) {
+    const it = sBtns[i], hot = s.menuHover === it.key;
+    rr(ctx, it.r.x, it.r.y, it.r.w, it.r.h, 9);
+    ctx.fillStyle = hot ? '#20414f' : '#16262f';
+    ctx.fill();
+    ctx.strokeStyle = hot ? '#6ecbff' : (it.dim ? '#243642' : '#2f4c5a');
+    ctx.lineWidth = hot ? 2 : 1.2;
+    ctx.stroke();
+    txt(ctx, it.label, it.r.x + it.r.w / 2, it.r.y + it.r.h / 2, 13,
+      it.dim && !hot ? '#5d7683' : '#9fb6c2', 'center', 600);
+  }
+
+  txt(ctx, '快捷键 1-5 选难度 · C 继续游戏 · 1-' + TOWER_KEYS.length + ' 选塔 · U 升级 · X 出售 · 空格 暂停 · R 重开 · A 自动升级', W / 2, 562, 11.5, '#5d7683', 'center', 500);
   txt(ctx, '全部图形由代码绘制，无外部素材；对局自动存档，关闭网页也能续战', W / 2, 586, 10.5, '#445c68', 'center', 500);
   ctx.restore();
 }
@@ -1824,8 +2111,27 @@ function drawPause(ctx, s) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,12,16,.72)';
   ctx.fillRect(0, 0, W, H);
-  txt(ctx, '已暂停', W / 2, H / 2 - 16, 36, '#eaf7ff', 'center', 800);
-  txt(ctx, '按空格或点击右上角继续', W / 2, H / 2 + 24, 13, '#9fb6c2', 'center', 500);
+  txt(ctx, '已暂停', W / 2, H / 2 - 44, 36, '#eaf7ff', 'center', 800);
+  txt(ctx, '按空格或点击右上角继续', W / 2, H / 2 - 8, 13, '#9fb6c2', 'center', 500);
+  const PR = pauseRects();
+  const items = [
+    { r: PR.exportBtn, label: '导出当前进度', key: 'export' },
+    { r: PR.importBtn, label: '导入存档', key: 'import' },
+    { r: PR.autoBtn, label: '自动升级设置', key: 'auto' }
+  ];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i], hot = s.pauseHover === it.key;
+    rr(ctx, it.r.x, it.r.y, it.r.w, it.r.h, 9);
+    ctx.fillStyle = hot ? '#20414f' : '#16262f';
+    ctx.fill();
+    ctx.strokeStyle = hot ? '#6ecbff' : '#2f4c5a';
+    ctx.lineWidth = hot ? 2 : 1.4;
+    ctx.stroke();
+    txt(ctx, it.label, it.r.x + it.r.w / 2, it.r.y + it.r.h / 2, 13.5, hot ? '#eaf7ff' : '#9fb6c2', 'center', 600);
+  }
+  txt(ctx, '自动升级：' + (s.autoUp ? '已开启' : '已关闭') + ' · 顺序：' + autoModeLabel(s.autoMode) +
+    ' · 预留 ' + AUTO_RESERVE + ' 金币建塔',
+    W / 2, H / 2 + 84, 12, '#6d8794', 'center', 500);
   ctx.restore();
 }
 
@@ -1982,6 +2288,7 @@ function draw(s, ctx) {
     drawPath(ctx, s);
     drawBase(ctx, s);
     drawMenu(ctx, s);
+    drawToast(ctx);
     ctx.restore();
     ctx.restore();
     return;
@@ -1995,6 +2302,7 @@ function draw(s, ctx) {
   drawPath(ctx, s);
   drawPreview(ctx, s);
   drawBase(ctx, s);
+  drawAutoOrigin(ctx, s);
   drawTowers(ctx, s);
   for (let i = 0; i < s.enemies.length; i++) drawEnemy(ctx, s.enemies[i]);
   drawShots(ctx, s);
@@ -2014,6 +2322,7 @@ function draw(s, ctx) {
   if (s.paused && s.scene === 'play') drawPause(ctx, s);
   if (s.scene === 'win') drawOver(ctx, s, true);
   if (s.scene === 'lose') drawOver(ctx, s, false);
+  drawToast(ctx);
 
   ctx.restore();
   ctx.restore();
@@ -2034,6 +2343,291 @@ function cellFromPoint(x, y) {
   return { c: Math.floor(x / CELL), r: Math.floor((y - FIELD_Y) / CELL) };
 }
 
+/* ---------------- 导出 / 导入 弹窗（DOM 覆盖层） ----------------
+   用真实 DOM 而不是画布绘制：文本框天然支持粘贴、选区、输入法与移动端键盘。 */
+let modalRoot = null, modalText = null, modalMsg = null, modalBtns = null, modalTitle = null, modalDesc = null;
+
+function ensureModal() {
+  if (modalRoot) return modalRoot;
+  if (typeof document === 'undefined' || !document.body) return null;
+  modalRoot = document.createElement('div');
+  modalRoot.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:99999;display:none;' +
+    'align-items:center;justify-content:center;background:rgba(4,10,14,.82);' +
+    'font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;';
+  const card = document.createElement('div');
+  card.style.cssText = 'width:min(720px,92vw);max-height:88vh;overflow:auto;box-sizing:border-box;' +
+    'background:#16262f;border:1px solid #2f4c5a;border-radius:14px;padding:20px 22px 18px;' +
+    'box-shadow:0 24px 70px rgba(0,0,0,.72);color:#eaf7ff;';
+  modalTitle = document.createElement('div');
+  modalTitle.id = 'td-modal-title';
+  modalTitle.style.cssText = 'font-size:19px;font-weight:700;letter-spacing:1px;';
+  modalDesc = document.createElement('div');
+  modalDesc.id = 'td-modal-desc';
+  modalDesc.style.cssText = 'font-size:12.5px;color:#8aa6b4;margin-top:8px;line-height:1.8;';
+  modalText = document.createElement('textarea');
+  modalText.id = 'td-modal-text';
+  modalText.style.cssText = 'width:100%;height:180px;box-sizing:border-box;margin-top:14px;resize:vertical;' +
+    'background:#0f1b22;border:1px solid #2f4c5a;border-radius:10px;color:#cfeaf7;' +
+    'font-family:Consolas,Monaco,"Courier New",monospace;font-size:12px;line-height:1.6;padding:10px 12px;';
+  modalMsg = document.createElement('div');
+  modalMsg.id = 'td-modal-msg';
+  modalMsg.style.cssText = 'font-size:12.5px;color:#ef5f5f;min-height:18px;margin-top:10px;';
+  modalBtns = document.createElement('div');
+  modalBtns.id = 'td-modal-btns';
+  modalBtns.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;';
+  card.appendChild(modalTitle);
+  card.appendChild(modalDesc);
+  card.appendChild(modalText);
+  card.appendChild(modalMsg);
+  card.appendChild(modalBtns);
+  modalRoot.appendChild(card);
+  document.body.appendChild(modalRoot);
+  /* 点遮罩空白处关闭 */
+  modalRoot.addEventListener('pointerdown', function (ev) {
+    if (ev.target === modalRoot) closeModal();
+  });
+  return modalRoot;
+}
+function modalButton(label, primary, onClick) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = label;
+  b.style.cssText = 'padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;border-radius:9px;' +
+    'border:1px solid ' + (primary ? '#6ecbff' : '#2f4c5a') + ';' +
+    'background:' + (primary ? '#20414f' : '#1a2c35') + ';' +
+    'color:' + (primary ? '#eaf7ff' : '#9fb6c2') + ';';
+  b.addEventListener('click', onClick);
+  modalBtns.appendChild(b);
+  return b;
+}
+function setModalMsg(text, color) {
+  if (!modalMsg) return;
+  modalMsg.textContent = text;
+  modalMsg.style.color = color || '#8aa6b4';
+}
+function modalOpen() { return !!(modalRoot && modalRoot.style.display === 'flex'); }
+function closeModal() {
+  if (modalRoot) modalRoot.style.display = 'none';
+}
+/* 复制：优先用剪贴板 API，被浏览器拒绝时退回 execCommand */
+function copyToClipboard(text) {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      const p = navigator.clipboard.writeText(text);
+      if (p && p.then) {
+        p.then(function () { setModalMsg('已复制到剪贴板 ✓', '#57d68a'); },
+          function () { fallbackCopy(text); });
+        return true;
+      }
+    }
+  } catch (e) { /* 落到下面的降级方案 */ }
+  return fallbackCopy(text);
+}
+function fallbackCopy(text) {
+  try {
+    if (!modalText) return false;
+    modalText.focus();
+    modalText.select();
+    const ok = document.execCommand('copy');
+    setModalMsg(ok ? '已复制到剪贴板 ✓' : '复制失败，请手动全选上面的文字复制', ok ? '#57d68a' : '#ef5f5f');
+    return ok;
+  } catch (e) { return false; }
+}
+function downloadSaveFile(code, snap) {
+  if (typeof document === 'undefined' || typeof Blob === 'undefined') return;
+  try {
+    const blob = new Blob([code], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = saveCodeFilename(snap);
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      if (a.parentNode) a.parentNode.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 800);
+    setModalMsg('已导出文件：' + a.download, '#57d68a');
+  } catch (e) {
+    setModalMsg('导出文件失败，请改用「复制存档码」', '#ef5f5f');
+  }
+}
+function pickSaveFile() {
+  if (typeof document === 'undefined') return;
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.txt,.tdsave,text/plain';
+  inp.style.display = 'none';
+  inp.addEventListener('change', function () {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    const fr = new FileReader();
+    fr.onload = function () {
+      modalText.value = String(fr.result || '');
+      setModalMsg('已读取 ' + f.name + '，点「导入并续战」应用', '#8aa6b4');
+    };
+    fr.onerror = function () { setModalMsg('文件读取失败', '#ef5f5f'); };
+    fr.readAsText(f);
+  });
+  document.body.appendChild(inp);
+  inp.click();
+  setTimeout(function () { if (inp.parentNode) inp.parentNode.removeChild(inp); }, 0);
+}
+function openExportModal(code, snap) {
+  if (!ensureModal()) return;
+  modalTitle.textContent = '导出存档';
+  modalText.style.display = '';
+  modalDesc.innerHTML = '把下面这段<b style="color:#dff1f8;">存档码</b>复制走或存成文件，' +
+    '在另一台设备上用「导入存档」粘贴即可接着打。<br>' +
+    '关卡：' + DIFF[snap.mode].label + ' · 第 ' + snap.wave + ' 波 · 生命 ' + snap.lives + ' · 金币 ' + snap.gold +
+    ' · 防御塔 ' + snap.towers.length + ' 座';
+  modalText.value = code;
+  modalText.readOnly = true;
+  setModalMsg('', '#8aa6b4');
+  modalBtns.innerHTML = '';
+  modalButton('复制存档码', true, function () { copyToClipboard(code); });
+  modalButton('下载存档文件', false, function () { downloadSaveFile(code, snap); });
+  modalButton('关闭', false, closeModal);
+  modalRoot.style.display = 'flex';
+  modalText.focus();
+  modalText.select();
+}
+function openImportModal() {
+  if (!ensureModal()) return;
+  modalTitle.textContent = '导入存档';
+  modalText.style.display = '';
+  modalDesc.innerHTML = '粘贴此前导出的存档码（<b style="color:#dff1f8;">TD1:</b> 开头）。' +
+    '导入后会覆盖当前进度，并立刻从存档点续战。';
+  modalText.value = '';
+  modalText.readOnly = false;
+  setModalMsg('', '#8aa6b4');
+  modalBtns.innerHTML = '';
+  modalButton('导入并续战', true, doImportFromModal);
+  modalButton('从文件导入', false, pickSaveFile);
+  modalButton('关闭', false, closeModal);
+  modalRoot.style.display = 'flex';
+  modalText.focus();
+}
+function doImportFromModal() {
+  const res = importSaveCode(modalText.value);
+  if (!res.ok) {
+    setModalMsg('导入失败：' + res.err, '#ef5f5f');
+    return;
+  }
+  closeModal();
+  startContinue();
+  toast('存档已导入，正在续战…');
+}
+/* 切换升级顺序：智能 → 左→右 → 右→左 → 扩散 → 智能 */
+function cycleAutoMode(s) {
+  if (!s) return;
+  let idx = 0;
+  for (let i = 0; i < AUTO_MODES.length; i++) if (AUTO_MODES[i].id === s.autoMode) idx = i;
+  idx = (idx + 1) % AUTO_MODES.length;
+  setAutoMode(s, AUTO_MODES[idx].id);
+  if (s.autoMode === 'radial' && !s.autoOrigin) toast('扩散模式：在战场上点一个格子作为中心');
+  else toast('升级顺序：' + autoModeLabel(s.autoMode));
+}
+/* 自动升级设置面板 */
+function openAutoModal() {
+  if (!ensureModal()) return;
+  const s = S;
+  modalTitle.textContent = '自动升级设置';
+  modalDesc.innerHTML = '开启后游戏会自动把<b style="color:#dff1f8;">多余金币</b>用于升级防御塔，' +
+    '始终保留 <b style="color:#f4c451;">' + AUTO_RESERVE + '</b> 金币用于新建塔（最贵一座塔的造价）。<br>' +
+    '升级顺序可选：智能（每金币收益最高）/ 从左到右 / 从右到左 / 从一个点扩散。';
+  modalText.style.display = 'none';
+  setModalMsg('', '#8aa6b4');
+  modalBtns.innerHTML = '';
+  modalButton(s && s.autoUp ? '自动升级：已开启 ✓' : '自动升级：已关闭', true, function () {
+    if (S) { S.autoUp = !S.autoUp; toast(S.autoUp ? '自动升级已开启' : '自动升级已关闭'); }
+    openAutoModal();
+  });
+  for (let i = 0; i < AUTO_MODES.length; i++) {
+    const m = AUTO_MODES[i];
+    const cur = s && s.autoMode === m.id;
+    modalButton(m.label + (cur ? ' ✓' : ''), false, function () {
+      setAutoMode(S, m.id);
+      if (m.id === 'radial' && !S.autoOrigin) {
+        closeModal();
+        toast('请在战场上点击一个格子作为扩散中心');
+        return;
+      }
+      openAutoModal();
+    });
+  }
+  if (s && s.autoMode === 'radial') {
+    modalButton('重新点选扩散中心', false, function () {
+      closeModal();
+      if (S) { S.pickOrigin = true; toast('请在战场上点击一个格子作为扩散中心'); }
+    });
+    modalDesc.innerHTML += '<br>当前中心：' +
+      (s.autoOrigin ? ('第 ' + (s.autoOrigin.c + 1) + ' 列 · 第 ' + (s.autoOrigin.r + 1) + ' 行') : '尚未设置');
+  }
+  modalButton('关闭', false, closeModal);
+  modalRoot.style.display = 'flex';
+}
+/* 导出本地存档（菜单用） */
+function exportStoredSave() {
+  const snap = readStoredSave();
+  if (!snap) { toast('还没有可导出的存档，先打一局吧'); return; }
+  openExportModal(encodeSaveCode(snap), snap);
+}
+/* 导出当前对局（暂停时用，拿到的是此刻的真实进度） */
+function exportCurrentSave(s) {
+  const snap = snapshot(s);
+  if (!snap) { toast('当前没有进行中的对局'); return; }
+  saveGame(s); // 先落盘，保证导出的码和本地存档一致
+  openExportModal(encodeSaveCode(snap), snap);
+}
+
+/* ---------------- 轻提示 ---------------- */
+let toastMsg = '', toastT = 0;
+function toast(text) { toastMsg = text; toastT = 2.4; }function drawToast(ctx) {
+  if (toastT <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, toastT);
+  ctx.font = '600 13px "Microsoft YaHei","PingFang SC",system-ui,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const w = ctx.measureText(toastMsg).width + 30;
+  const x = (W - w) / 2, y = H - 96;
+  rr(ctx, x, y, w, 30, 9);
+  ctx.fillStyle = 'rgba(12,24,30,.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(110,203,255,.5)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = '#dff1f8';
+  ctx.fillText(toastMsg, W / 2, y + 15);
+  ctx.restore();
+}
+/* 扩散模式：把升级中心标出来，顺带提示正在等待点选 */
+function drawAutoOrigin(ctx, s) {
+  if (s.autoMode !== 'radial') return;
+  if (s.pickOrigin) {
+    txt(ctx, '请点击一个格子，作为自动升级的扩散中心', W / 2, FIELD_Y + FIELD_H - 26, 13, '#7de0c8', 'center', 700);
+    if (!s.autoOrigin) return;
+  }
+  if (!s.autoOrigin) return;
+  const x = cellCX(s.autoOrigin.c), y = cellCY(s.autoOrigin.r);
+  ctx.save();
+  const pulse = 0.5 + 0.5 * Math.sin(s.time * 3);
+  ctx.beginPath();
+  ctx.arc(x, y, 15 + pulse * 6, 0, 6.3);
+  ctx.strokeStyle = 'rgba(125,224,200,' + (0.45 + pulse * 0.4).toFixed(3) + ')';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(x, y, 4, 0, 6.3);
+  ctx.fillStyle = '#7de0c8';
+  ctx.fill();
+  txt(ctx, '扩散中心', Math.max(42, Math.min(W - 42, x)), y + 32, 11, '#7de0c8', 'center', 600);
+  ctx.restore();
+}
+
 function handleClick(s, x, y) {
   if (!s || s.scene !== 'play') return;
   const R = uiRects(s);
@@ -2042,9 +2636,21 @@ function handleClick(s, x, y) {
   if (inRect(R.speed, x, y)) { s.speed = s.speed === 1 ? 2 : (s.speed === 2 ? 3 : 1); return; }
   if (inRect(R.pause, x, y)) { s.paused = !s.paused; if (s.paused) saveGame(s); return; }
   if (inRect(R.mute, x, y)) { muted = !muted; return; }
+  if (inRect(R.auto, x, y)) {
+    s.autoUp = !s.autoUp;
+    toast(s.autoUp ? ('自动升级已开启 · ' + autoModeLabel(s.autoMode) + '顺序') : '自动升级已关闭');
+    return;
+  }
+  if (inRect(R.autoMode, x, y)) { cycleAutoMode(s); return; }
 
-  // 暂停时只允许顶栏按钮，禁止建造/升级/出售/召唤等游戏操作
-  if (s.paused) return;
+  // 暂停时只允许顶栏与暂停面板按钮，禁止建造/升级/出售/召唤等游戏操作
+  if (s.paused) {
+    const PR = pauseRects();
+    if (inRect(PR.exportBtn, x, y)) { exportCurrentSave(s); return; }
+    if (inRect(PR.importBtn, x, y)) { openImportModal(); return; }
+    if (inRect(PR.autoBtn, x, y)) { openAutoModal(); return; }
+    return;
+  }
 
   // 波次呼叫
   if (s.phase === 'prep' && x >= R.wave.x + 12 && x <= R.wave.x + R.wave.w - 12 && y >= R.wave.y + 64 && y <= R.wave.y + 82) {
@@ -2070,9 +2676,20 @@ function handleClick(s, x, y) {
 
   // 场地点击
   if (y >= FIELD_Y && y < BAR_Y) {
+    const cell = cellFromPoint(x, y);
+    /* 扩散模式：先让玩家在战场上点一个格子作为升级中心 */
+    if (s.pickOrigin) {
+      if (cell.c >= 0 && cell.r >= 0) {
+        s.autoOrigin = { c: cell.c, r: cell.r };
+        s.pickOrigin = false;
+        s.pick = null;
+        s.sel = null;
+        toast('扩散中心已设置');
+      }
+      return;
+    }
     const hit = hitTowerAt(s, x, y);
     if (hit) { s.sel = (s.sel === hit) ? null : hit; s.pick = null; return; }
-    const cell = cellFromPoint(x, y);
     if (s.pick) {
       const res = placeTower(s, s.pick, cell.c, cell.r);
       if (!res.ok) {
@@ -2091,6 +2708,18 @@ function handleMove(s, x, y) {
   const cell = cellFromPoint(x, y);
   s.hover.c = cell.c;
   s.hover.r = cell.r;
+  const R = uiRects(s);
+  s.autoHover = null;
+  if (inRect(R.auto, x, y)) s.autoHover = 'auto';
+  else if (inRect(R.autoMode, x, y)) s.autoHover = 'autoMode';
+  /* 暂停面板按钮悬停 */
+  if (s.paused) {
+    const PR = pauseRects();
+    s.pauseHover = null;
+    if (inRect(PR.exportBtn, x, y)) s.pauseHover = 'export';
+    else if (inRect(PR.importBtn, x, y)) s.pauseHover = 'import';
+    else if (inRect(PR.autoBtn, x, y)) s.pauseHover = 'auto';
+  }
 }
 
 function bindInput(canvas, getState) {
@@ -2109,6 +2738,8 @@ function bindInput(canvas, getState) {
     if (s.scene === 'menu') {
       const R = menuRects();
       if (hasSave() && inRect(R.continueBtn, p.x, p.y)) { startContinue(); return; }
+      if (inRect(R.exportBtn, p.x, p.y)) { exportStoredSave(); return; }
+      if (inRect(R.importBtn, p.x, p.y)) { openImportModal(); return; }
       for (let i = 0; i < R.btns.length; i++) {
         if (inRect(R.btns[i], p.x, p.y)) { startNewRun(R.btns[i].mode); return; }
       }
@@ -2130,6 +2761,8 @@ function bindInput(canvas, getState) {
       const R = menuRects();
       s.menuHover = null;
       if (hasSave() && inRect(R.continueBtn, p.x, p.y)) s.menuHover = 'continue';
+      else if (inRect(R.exportBtn, p.x, p.y)) s.menuHover = 'export';
+      else if (inRect(R.importBtn, p.x, p.y)) s.menuHover = 'import';
       for (let i = 0; i < R.btns.length; i++) if (inRect(R.btns[i], p.x, p.y)) s.menuHover = R.btns[i].mode;
     }
   });
@@ -2148,6 +2781,11 @@ function bindInput(canvas, getState) {
     if (!s) return;
     const raw = (typeof ev.key === 'string') ? ev.key : '';
     const k = raw.toLowerCase();
+    /* 弹窗打开时，游戏快捷键全部让位给文本框（Esc 关闭弹窗） */
+    if (modalOpen()) {
+      if (k === 'escape') closeModal();
+      return;
+    }
     if (k === ' ' || k === 'p') {
       ev.preventDefault();
       if (s.scene === 'play') { s.paused = !s.paused; if (s.paused) saveGame(s); }
@@ -2187,6 +2825,9 @@ function bindInput(canvas, getState) {
       muted = !muted;
     } else if (k === 'f') {
       s.speed = s.speed === 1 ? 2 : (s.speed === 2 ? 3 : 1);
+    } else if (k === 'a') {
+      s.autoUp = !s.autoUp;
+      toast(s.autoUp ? ('自动升级已开启 · ' + autoModeLabel(s.autoMode) + '顺序') : '自动升级已关闭');
     }
   });
 }
@@ -2255,6 +2896,7 @@ function boot() {
     let dt = (ts - last) / 1000;
     last = ts;
     if (dt > 0.25) dt = 0.25;
+    toastT = Math.max(0, toastT - dt);
     step(S, dt);
     ctxEl.setTransform(DPR, 0, 0, DPR, 0, 0);
     draw(S, ctxEl);
@@ -2283,6 +2925,14 @@ const api = {
   fitView: fitView, view: function () { return view; },
   saveGame: saveGame, loadGame: loadGame, hasSave: hasSave, clearSave: clearSave,
   saveInfo: saveInfo,
+  encodeSaveCode: encodeSaveCode, decodeSaveCode: decodeSaveCode,
+  importSaveCode: importSaveCode, validateSnapshot: validateSnapshot,
+  readStoredSave: readStoredSave, saveCodeFilename: saveCodeFilename,
+  fnv1a: fnv1a, b64encode: b64encode, b64decode: b64decode,
+  utf8Bytes: utf8Bytes, utf8String: utf8String,
+  autoUpgradeTick: autoUpgradeTick, autoUpgradeOrder: autoUpgradeOrder,
+  towerValueGain: towerValueGain, setAutoMode: setAutoMode, cycleAutoMode: cycleAutoMode,
+  AUTO_RESERVE: AUTO_RESERVE, AUTO_MODES: AUTO_MODES,
   boot: boot, muted: function (v) { if (v !== undefined) muted = !!v; return muted; }
 };
 if (typeof global.TD === 'undefined') global.TD = api;
