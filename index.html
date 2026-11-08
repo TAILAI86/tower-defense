@@ -96,7 +96,10 @@ function sfx(freq, dur, type, vol) {
 function cellCX(c) { return c * CELL + CELL / 2; }
 function cellCY(r) { return FIELD_Y + r * CELL + CELL / 2; }
 
-function buildPath(wp) {
+/* buildPath：把折线航点展开成路径点、累计长度与占地格
+   tail 为可选的终点（基地中心）：路径末端直接延伸到核心，
+   敌人必须走到核心上才算漏怪，画面上也不会在基地前凭空消失。 */
+function buildPath(wp, tail) {
   const pts = wp.map(function (p) { return { x: cellCX(p[0]), y: cellCY(p[1]) }; });
   const cum = [0];
   for (let i = 1; i < pts.length; i++) {
@@ -113,6 +116,14 @@ function buildPath(wp) {
     while (c !== b[0] || r !== b[1]) {
       c += dc; r += dr;
       cells[c + ',' + r] = 1;
+    }
+  }
+  if (tail) {
+    const last = pts[pts.length - 1];
+    const d = Math.hypot(tail.x - last.x, tail.y - last.y);
+    if (d > 0) {
+      pts.push({ x: tail.x, y: tail.y });
+      cum.push(cum[cum.length - 1] + d);
     }
   }
   return { pts: pts, cum: cum, total: cum[cum.length - 1], cells: cells };
@@ -134,7 +145,10 @@ const LEVELS = {
     desc: '熔岩峡谷，梳形路线，敌人更快更凶'
   }
 };
-for (const lid in LEVELS) LEVELS[lid].path = buildPath(LEVELS[lid].wp);
+for (const lid in LEVELS) {
+  const L = LEVELS[lid];
+  L.path = buildPath(L.wp, { x: L.base.cx, y: L.base.cy });
+}
 
 /* 主关卡的路径 / 基地：兼容既有引用 */
 const PATH = LEVELS.main.path;
@@ -197,9 +211,15 @@ const TOWERS = {
     range: 150, dmg: 0, rate: 0, proj: 'none', pspd: 0, splash: 0,
     ampMul: 0.32,
     desc: '电磁增幅场，提升范围内友军射速（叠加生效），自身不开火'
+  },
+  repair: {
+    key: 'repair', name: '维修站', role: '治疗', cost: 120, color: '#ff9ec7', dark: '#b8547f',
+    range: 0, dmg: 0, rate: 0, proj: 'none', pspd: 0, splash: 0,
+    repair: 2, repairGap: 10,
+    desc: '驻扎在基地里，按固定节奏修复核心受损的生命'
   }
 };
-const TOWER_KEYS = ['arrow', 'cannon', 'frost', 'sniper', 'tesla', 'venom', 'amp'];
+const TOWER_KEYS = ['arrow', 'cannon', 'frost', 'sniper', 'tesla', 'venom', 'amp', 'repair'];
 
 const ENEMIES = {
   grunt: { name: '步兵', hp: 62, speed: 52, gold: 8, leak: 1, score: 10, r: 11, armor: 0, color: '#e0765c', shape: 'circle' },
@@ -210,6 +230,7 @@ const ENEMIES = {
   shield: { name: '护盾兵', hp: 150, shield: 90, shieldRegen: 14, shieldDelay: 3.5, speed: 44, gold: 16, leak: 2, score: 24, r: 12, armor: 0.08, color: '#4fc3c8', shape: 'shield' },
   medic: { name: '医疗兵', hp: 120, speed: 46, gold: 8, leak: 1, score: 22, r: 11, armor: 0, color: '#f2ead8', shape: 'medic', healR: 95, healRate: 8 },
   berserker: { name: '狂怒兽', hp: 130, speed: 40, gold: 12, leak: 2, score: 20, r: 13, armor: 0.05, color: '#e8639b', shape: 'berserker', rage: 0.8 },
+  disruptor: { name: '干扰兵', hp: 145, speed: 40, gold: 22, leak: 2, score: 30, r: 12, armor: 0.1, color: '#c78ef0', shape: 'disruptor', jamR: 120, jamDur: 1.2, jamGap: 5.5 },
   swarm: { name: '蜂群', hp: 22, speed: 70, gold: 2, leak: 1, score: 4, r: 6, armor: 0, color: '#ffd166', shape: 'swarm' },
   boss: { name: '首领', hp: 1600, speed: 28, gold: 130, leak: 6, score: 250, r: 19, armor: 0.2, color: '#d4569f', shape: 'boss' }
 };
@@ -223,13 +244,13 @@ const WAVES = [
   [{ t: 'runner', n: 10, gap: 0.4 }, { t: 'shield', n: 4, gap: 1.1 }, { t: 'tank', n: 4, gap: 1.35 }, { t: 'swarm', n: 6, gap: 0.24 }],
   [{ t: 'splitter', n: 6, gap: 0.9 }, { t: 'grunt', n: 10, gap: 0.42 }],
   [{ t: 'tank', n: 8, gap: 1.2 }, { t: 'shield', n: 4, gap: 1.0 }, { t: 'runner', n: 8, gap: 0.38 }, { t: 'swarm', n: 8, gap: 0.22 }, { t: 'berserker', n: 1, gap: 2.2 }],
-  [{ t: 'splitter', n: 8, gap: 0.8 }, { t: 'runner', n: 14, gap: 0.3 }, { t: 'berserker', n: 2, gap: 2.4 }],
-  [{ t: 'tank', n: 10, gap: 1.0 }, { t: 'shield', n: 6, gap: 0.9 }, { t: 'grunt', n: 12, gap: 0.38 }, { t: 'medic', n: 2, gap: 2.4 }, { t: 'berserker', n: 2, gap: 2.6 }],
-  [{ t: 'runner', n: 18, gap: 0.26 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 10, gap: 0.95 }, { t: 'medic', n: 2, gap: 2.2 }, { t: 'swarm', n: 10, gap: 0.2 }],
-  [{ t: 'splitter', n: 10, gap: 0.7 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 8, gap: 1.0 }, { t: 'medic', n: 2, gap: 2.2 }, { t: 'berserker', n: 3, gap: 2.2 }],
-  [{ t: 'runner', n: 24, gap: 0.24 }, { t: 'splitter', n: 12, gap: 0.62 }, { t: 'medic', n: 2, gap: 2.2 }, { t: 'swarm', n: 12, gap: 0.18 }],
-  [{ t: 'tank', n: 10, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.8 }, { t: 'splitter', n: 12, gap: 0.55 }, { t: 'grunt', n: 12, gap: 0.3 }, { t: 'medic', n: 3, gap: 2.0 }, { t: 'berserker', n: 3, gap: 2.4 }],
-  [{ t: 'boss', n: 1, gap: 2.0 }, { t: 'tank', n: 8, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.75 }, { t: 'splitter', n: 10, gap: 0.55 }, { t: 'runner', n: 14, gap: 0.28 }, { t: 'medic', n: 3, gap: 2.0 }, { t: 'berserker', n: 4, gap: 2.2 }, { t: 'swarm', n: 16, gap: 0.16 }]
+  [{ t: 'splitter', n: 8, gap: 0.8 }, { t: 'runner', n: 14, gap: 0.3 }, { t: 'berserker', n: 2, gap: 2.4 }, { t: 'disruptor', n: 1, gap: 2.4 }],
+  [{ t: 'tank', n: 10, gap: 1.0 }, { t: 'shield', n: 6, gap: 0.9 }, { t: 'grunt', n: 12, gap: 0.38 }, { t: 'medic', n: 2, gap: 2.4 }, { t: 'berserker', n: 2, gap: 2.6 }, { t: 'disruptor', n: 1, gap: 2.6 }],
+  [{ t: 'runner', n: 18, gap: 0.26 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 10, gap: 0.95 }, { t: 'medic', n: 2, gap: 2.2 }, { t: 'swarm', n: 10, gap: 0.2 }, { t: 'disruptor', n: 1, gap: 2.2 }],
+  [{ t: 'splitter', n: 10, gap: 0.7 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 8, gap: 1.0 }, { t: 'medic', n: 2, gap: 2.2 }, { t: 'berserker', n: 3, gap: 2.2 }, { t: 'disruptor', n: 2, gap: 2.4 }],
+  [{ t: 'runner', n: 24, gap: 0.24 }, { t: 'splitter', n: 12, gap: 0.62 }, { t: 'medic', n: 2, gap: 2.2 }, { t: 'swarm', n: 12, gap: 0.18 }, { t: 'disruptor', n: 2, gap: 2.2 }],
+  [{ t: 'tank', n: 10, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.8 }, { t: 'splitter', n: 12, gap: 0.55 }, { t: 'grunt', n: 12, gap: 0.3 }, { t: 'medic', n: 3, gap: 2.0 }, { t: 'berserker', n: 3, gap: 2.4 }, { t: 'disruptor', n: 2, gap: 2.0 }],
+  [{ t: 'boss', n: 1, gap: 2.0 }, { t: 'tank', n: 8, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.75 }, { t: 'splitter', n: 10, gap: 0.55 }, { t: 'runner', n: 14, gap: 0.28 }, { t: 'medic', n: 3, gap: 2.0 }, { t: 'berserker', n: 4, gap: 2.2 }, { t: 'swarm', n: 16, gap: 0.16 }, { t: 'disruptor', n: 3, gap: 2.2 }]
 ];
 
 /* 熔渊关卡：12 波专属表，狂怒兽与蜂群登场更早，终局双倍压力 */
@@ -242,10 +263,10 @@ const FORGE_WAVES = [
   [{ t: 'runner', n: 10, gap: 0.4 }, { t: 'shield', n: 4, gap: 1.1 }, { t: 'tank', n: 4, gap: 1.35 }, { t: 'berserker', n: 2, gap: 2.4 }],
   [{ t: 'splitter', n: 6, gap: 0.9 }, { t: 'grunt', n: 10, gap: 0.42 }, { t: 'swarm', n: 6, gap: 0.24 }],
   [{ t: 'tank', n: 8, gap: 1.2 }, { t: 'shield', n: 4, gap: 1.0 }, { t: 'runner', n: 8, gap: 0.38 }, { t: 'berserker', n: 3, gap: 2.2 }, { t: 'swarm', n: 6, gap: 0.22 }],
-  [{ t: 'splitter', n: 8, gap: 0.8 }, { t: 'runner', n: 14, gap: 0.3 }, { t: 'medic', n: 2, gap: 2.4 }, { t: 'berserker', n: 3, gap: 2.4 }],
-  [{ t: 'tank', n: 10, gap: 1.0 }, { t: 'shield', n: 6, gap: 0.9 }, { t: 'grunt', n: 12, gap: 0.38 }, { t: 'medic', n: 2, gap: 2.4 }, { t: 'berserker', n: 4, gap: 2.4 }],
-  [{ t: 'runner', n: 18, gap: 0.26 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 10, gap: 0.95 }, { t: 'medic', n: 2, gap: 2.2 }, { t: 'swarm', n: 10, gap: 0.2 }],
-  [{ t: 'boss', n: 1, gap: 2.0 }, { t: 'tank', n: 10, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.8 }, { t: 'splitter', n: 12, gap: 0.55 }, { t: 'runner', n: 14, gap: 0.28 }, { t: 'medic', n: 3, gap: 2.0 }, { t: 'berserker', n: 5, gap: 2.2 }, { t: 'swarm', n: 16, gap: 0.16 }]
+  [{ t: 'splitter', n: 8, gap: 0.8 }, { t: 'runner', n: 14, gap: 0.3 }, { t: 'medic', n: 2, gap: 2.4 }, { t: 'berserker', n: 3, gap: 2.4 }, { t: 'disruptor', n: 1, gap: 2.4 }],
+  [{ t: 'tank', n: 10, gap: 1.0 }, { t: 'shield', n: 6, gap: 0.9 }, { t: 'grunt', n: 12, gap: 0.38 }, { t: 'medic', n: 2, gap: 2.4 }, { t: 'berserker', n: 4, gap: 2.4 }, { t: 'disruptor', n: 2, gap: 2.4 }],
+  [{ t: 'runner', n: 18, gap: 0.26 }, { t: 'shield', n: 6, gap: 0.85 }, { t: 'tank', n: 10, gap: 0.95 }, { t: 'medic', n: 2, gap: 2.2 }, { t: 'swarm', n: 10, gap: 0.2 }, { t: 'disruptor', n: 2, gap: 2.2 }],
+  [{ t: 'boss', n: 1, gap: 2.0 }, { t: 'tank', n: 10, gap: 0.9 }, { t: 'shield', n: 8, gap: 0.8 }, { t: 'splitter', n: 12, gap: 0.55 }, { t: 'runner', n: 14, gap: 0.28 }, { t: 'medic', n: 3, gap: 2.0 }, { t: 'berserker', n: 5, gap: 2.2 }, { t: 'swarm', n: 16, gap: 0.16 }, { t: 'disruptor', n: 3, gap: 2.2 }]
 ];
 const TOTAL_WAVES = WAVES.length;
 
@@ -279,6 +300,7 @@ function waveDef(w, mode) {
     { t: 'medic', n: 1 + Math.floor(k * 0.4), gap: 2.2 },
     { t: 'tank', n: 3 + k, gap: Math.max(0.5, 0.85 - 0.01 * k) },
     { t: 'berserker', n: 1 + Math.floor(k * 0.5), gap: Math.max(0.8, 2.2 - 0.03 * k) },
+    { t: 'disruptor', n: 1 + Math.floor(k * 0.5), gap: Math.max(1.2, 2.4 - 0.02 * k) },
     { t: 'swarm', n: 8 + 2 * k, gap: Math.max(0.14, 0.24 - 0.003 * k) }
   ];
   if (w % 5 === 0) groups.unshift({ t: 'boss', n: Math.max(1, Math.floor(w / 15)), gap: 3.0 });
@@ -303,6 +325,15 @@ function saveEndlessBest(wave) {
    只序列化可重建的纯数据：跳过函数、子弹引用与瞬时特效，
    加载时由防御塔与路径重新推导占位表与坐标，确保读档即战。 */
 const SAVE_KEY = 'TD_SAVE_V1';
+/* 数值清洗：把被手工改坏 / 从别处粘来的存档收敛回安全区间。
+   非法值一律退回默认值，绝不让半截数据把状态机带进死循环。 */
+function num(v, def, min, max) {
+  if (typeof v !== 'number' || !isFinite(v)) return def;
+  if (min !== undefined && v < min) return min;
+  if (max !== undefined && v > max) return max;
+  return v;
+}
+function inum(v, def, min, max) { return Math.round(num(v, def, min, max)); }
 function snapshot(s) {
   if (!s || s.scene !== 'play') return null;
   return {
@@ -325,6 +356,7 @@ function snapshot(s) {
         poisonDps: e.poisonDps, poisonT: e.poisonT, poisonSrc: e.poisonSrc ? e.poisonSrc.id : null,
         shred: e.shred, shredT: e.shredT, healR: e.healR, healRate: e.healRate, healFx: e.healFx,
         rage: e.rage || 0,
+        jamR: e.jamR || 0, jamDur: e.jamDur || 0, jamGap: e.jamGap || 0, jamCd: e.jamCd || 0,
         gold: e.gold, leak: e.leak, score: e.score, color: e.color, shape: e.shape, ang: e.ang, wob: e.wob
       };
     }),
@@ -336,19 +368,33 @@ function saveGame(s) {
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(snapshot(s))); return true; }
   catch (e) { return false; }
 }
+/* 主菜单每帧都要问"有没有存档"，这里按原始字符串做缓存，
+   避免每帧 JSON.parse 一次本地存储 */
+let saveInfoCache = { raw: null, val: null };
 function saveInfo() {
   if (typeof localStorage === 'undefined') return null;
+  let raw = null;
+  try { raw = localStorage.getItem(SAVE_KEY); } catch (e) { return null; }
+  if (raw === saveInfoCache.raw) return saveInfoCache.val;
+  let val = null;
   try {
-    const snap = JSON.parse(localStorage.getItem(SAVE_KEY));
+    const snap = JSON.parse(raw);
     /* 模式被篡改 / 损坏的存档一律当作无存档，避免主菜单按非法难度取标签崩溃 */
-    if (!snap || snap.v !== 1 || !DIFF[snap.mode]) return null;
-    return { mode: snap.mode, wave: snap.wave, lives: snap.lives };
-  } catch (e) { return null; }
+    if (snap && snap.v === 1 && DIFF[snap.mode]) {
+      val = { mode: snap.mode, wave: inum(snap.wave, 0, 0, 9999), lives: inum(snap.lives, 0, 0, 1e6) };
+    }
+  } catch (e) { val = null; }
+  saveInfoCache = { raw: raw, val: val };
+  return val;
 }
 function hasSave() { return !!saveInfo(); }
 function clearSave() {
   if (typeof localStorage === 'undefined') return;
-  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+  try {
+    if (typeof localStorage.removeItem === 'function') localStorage.removeItem(SAVE_KEY);
+    else localStorage.setItem(SAVE_KEY, '');   /* 老环境没有 removeItem 时退回写空串 */
+  } catch (e) {}
+  saveInfoCache = { raw: null, val: null };
 }
 function loadGame() {
   if (typeof localStorage === 'undefined') return null;
@@ -357,30 +403,96 @@ function loadGame() {
   if (!snap || snap.v !== 1) return null;
   /* 非法难度 = 损坏存档，安全降级为"无存档" */
   if (!DIFF[snap.mode]) return null;
+  /* 本地存档槽也可能被手工改坏，这里统一走结构校验 */
+  if (!validateSnapshot(snap).ok) return null;
   const mode = snap.mode, d = diffOf(mode), lv = LEVELS[d.level];
+  const maxLives = Math.max(1, inum(snap.maxLives, d.lives, 1, 1e6));
   const s = {
     mode: mode, level: d.level, path: lv.path, base: lv.base, baseCells: lv.baseCells,
-    scene: 'play', paused: !!snap.paused, speed: snap.speed || 1, time: snap.time || 0,
-    gold: snap.gold, lives: snap.lives, maxLives: snap.maxLives, score: snap.score,
-    wave: snap.wave, phase: snap.phase, prepTotal: snap.prepTotal, prepLeft: snap.prepLeft,
-    spawnQueue: snap.spawnQueue || [], spawnTimer: snap.spawnTimer || 0, nextId: snap.nextId || 1,
+    scene: 'play', paused: !!snap.paused, speed: num(snap.speed, 1, 1, 3), time: num(snap.time, 0, 0, 1e9),
+    gold: inum(snap.gold, 0, 0, 1e9),
+    lives: Math.min(maxLives, inum(snap.lives, maxLives, 0, 1e6)),
+    maxLives: maxLives,
+    score: inum(snap.score, 0, 0, 1e12),
+    wave: inum(snap.wave, 0, 0, 9999),
+    phase: (snap.phase === 'spawning' || snap.phase === 'clearing') ? snap.phase : 'prep',
+    prepTotal: num(snap.prepTotal, d.prep, 0, 120), prepLeft: num(snap.prepLeft, 0, 0, 120),
+    spawnQueue: [], spawnTimer: num(snap.spawnTimer, 0, 0, 60),
+    nextId: Math.max(1, inum(snap.nextId, 1, 1, 1e9)),
     enemies: [], towers: [], shots: [], effects: [], floats: [],
     occ: {}, pick: null, sel: null, hover: { c: -1, r: -1 }, banner: null, hint: 0, shake: 0,
     saveT: 0, saveFlash: 0,
-    autoUp: !!snap.autoUp, autoMode: snap.autoMode || 'smart',
-    autoOrigin: snap.autoOrigin ? { c: snap.autoOrigin.c, r: snap.autoOrigin.r } : null,
+    autoUp: !!snap.autoUp, autoMode: autoModeValid(snap.autoMode) ? snap.autoMode : 'smart',
+    autoOrigin: (snap.autoOrigin && typeof snap.autoOrigin.c === 'number' && typeof snap.autoOrigin.r === 'number')
+      ? { c: inum(snap.autoOrigin.c, 0, 0, COLS - 1), r: inum(snap.autoOrigin.r, 0, 0, ROWS - 1) } : null,
     pickOrigin: false, autoT: 0,
-    stat: snap.stat || { kills: 0, built: 0, leaked: 0, goldEarned: 0 }
+    stat: {
+      kills: inum(snap.stat && snap.stat.kills, 0, 0, 1e9),
+      built: inum(snap.stat && snap.stat.built, 0, 0, 1e9),
+      leaked: inum(snap.stat && snap.stat.leaked, 0, 0, 1e9),
+      goldEarned: inum(snap.stat && snap.stat.goldEarned, 0, 0, 1e12)
+    }
   };
+  /* 出怪队列逐项校验：间隔必须是有限正数，否则出怪会永久卡住 */
+  const q = Array.isArray(snap.spawnQueue) ? snap.spawnQueue : [];
+  for (let i = 0; i < q.length; i++) {
+    const it = q[i];
+    if (!it || !ENEMIES[it.t]) continue;
+    s.spawnQueue.push({ t: it.t, gap: num(it.gap, 0.5, 0.05, 10) });
+  }
   const byId = {};
   for (let i = 0; i < (snap.towers || []).length; i++) {
-    const t = snap.towers[i]; t.flash = 0;
-    s.towers.push(t); s.occ[t.c + ',' + t.r] = t; byId[t.id] = t;
+    const raw = snap.towers[i];
+    if (!raw || !TOWERS[raw.key]) continue;
+    const c = inum(raw.c, -1, 0, COLS - 1), r = inum(raw.r, -1, 0, ROWS - 1);
+    if (c < 0 || r < 0) continue;
+    const ck = c + ',' + r;
+    if (s.occ[ck]) continue;            /* 同一格只保留一座塔 */
+    if (s.path.cells[ck]) continue;      /* 路径格不能有塔 */
+    if (s.baseCells.indexOf(ck) >= 0 && raw.key !== 'repair') continue;
+    const id = inum(raw.id, 0, 0, 1e9) || s.nextId++;
+    if (id >= s.nextId) s.nextId = id + 1;
+    /* 坐标一律按格子重算，不信存档里写死的 x/y（否则改档能把塔挪出战场） */
+    const t = {
+      id: id, key: raw.key, c: c, r: r, x: cellCX(c), y: cellCY(r),
+      level: inum(raw.level, 1, 1, MAX_LV),
+      cd: num(raw.cd, 0, 0, 60), ang: num(raw.ang, -Math.PI / 2, -Math.PI * 4, Math.PI * 4),
+      invested: num(raw.invested, TOWERS[raw.key].cost, 0, 1e9),
+      kills: inum(raw.kills, 0, 0, 1e9),
+      flash: 0, repT: 0, jammed: 0
+    };
+    s.towers.push(t); s.occ[ck] = t; byId[id] = t;
   }
   for (let i = 0; i < (snap.enemies || []).length; i++) {
-    const e = snap.enemies[i], p = posAt(e.dist, s.path);
-    e.x = p.x; e.y = p.y; e.ang = p.ang; e.hitT = 0; e.dead = false;
-    e.poisonSrc = (e.poisonSrc != null) ? (byId[e.poisonSrc] || null) : null;
+    const raw = snap.enemies[i];
+    if (!raw || !ENEMIES[raw.type]) continue;
+    const def = ENEMIES[raw.type];
+    const dist = num(raw.dist, 0, 0, lv.path.total);
+    const p = posAt(dist, s.path);
+    const eHp = Math.max(1, num(raw.maxHp, def.hp, 1, 1e9));
+    const id = inum(raw.id, 0, 0, 1e9) || s.nextId++;
+    if (id >= s.nextId) s.nextId = id + 1;
+    const e = {
+      id: id, type: raw.type, x: p.x, y: p.y, dist: dist,
+      hp: num(raw.hp, eHp, 0, eHp), maxHp: eHp,
+      speed: num(raw.speed, def.speed, 1, 1e4),
+      slowT: num(raw.slowT, 0, 0, 60), slowMul: num(raw.slowMul, 1, 0.05, 1),
+      r: def.r, armor: num(raw.armor, def.armor, 0, 0.9),
+      shield: num(raw.shield, 0, 0, eHp * 4), maxShield: num(raw.maxShield, 0, 0, eHp * 4),
+      shieldRegen: num(raw.shieldRegen, 0, 0, 1e5), shieldDelay: num(raw.shieldDelay, 0, 0, 60),
+      shieldT: num(raw.shieldT, 0, 0, 60),
+      poisonDps: num(raw.poisonDps, 0, 0, 1e6), poisonT: num(raw.poisonT, 0, 0, 60), poisonSrc: null,
+      shred: num(raw.shred, 0, 0, 0.9), shredT: num(raw.shredT, 0, 0, 60),
+      healR: num(raw.healR, 0, 0, 1e4), healRate: num(raw.healRate, 0, 0, 1e6), healFx: 0,
+      rage: num(raw.rage, 0, 0, 10),
+      jamR: num(raw.jamR, 0, 0, 1e4), jamDur: num(raw.jamDur, 0, 0, 60),
+      jamGap: num(raw.jamGap, 0, 0, 60), jamCd: num(raw.jamCd, 0, 0, 60),
+      gold: inum(raw.gold, def.gold, 0, 1e6), leak: inum(raw.leak, def.leak, 0, 1e3),
+      score: inum(raw.score, def.score, 0, 1e6),
+      color: def.color, shape: def.shape, ang: p.ang, hitT: 0, dead: false,
+      wob: num(raw.wob, 0, 0, 100)
+    };
+    e.poisonSrc = (raw.poisonSrc != null) ? (byId[raw.poisonSrc] || null) : null;
     s.enemies.push(e);
   }
   return s;
@@ -478,15 +590,43 @@ function validateSnapshot(snap) {
   }
   if (snap.wave < 0 || snap.wave > 9999) return { ok: false, err: '存档波次异常' };
   if (snap.gold < 0 || snap.lives < 0) return { ok: false, err: '存档数值异常（金币 / 生命为负）' };
+  /* 阶段字段必须是三种合法值之一，否则波次推进会永远停住 */
+  if (snap.phase !== undefined && snap.phase !== 'prep' && snap.phase !== 'spawning' && snap.phase !== 'clearing') {
+    return { ok: false, err: '存档里的对局阶段无效' };
+  }
+  /* 统计字段必须完整可读，缺一项就会让累计收入变成 NaN */
+  if (snap.stat !== undefined) {
+    if (!snap.stat || typeof snap.stat !== 'object') return { ok: false, err: '存档里的统计数据异常' };
+    const st = ['kills', 'built', 'leaked', 'goldEarned'];
+    for (let i = 0; i < st.length; i++) {
+      const v = snap.stat[st[i]];
+      if (v === undefined) continue;
+      if (typeof v !== 'number' || !isFinite(v) || v < 0) return { ok: false, err: '存档里的统计数据异常' };
+    }
+  }
+  /* 出怪队列：每项都要是已知敌人 + 有限正数间隔，否则出怪会卡死 */
+  if (snap.spawnQueue !== undefined) {
+    if (!Array.isArray(snap.spawnQueue)) return { ok: false, err: '存档里的出怪队列异常' };
+    for (let i = 0; i < snap.spawnQueue.length; i++) {
+      const it = snap.spawnQueue[i];
+      if (!it || !ENEMIES[it.t]) return { ok: false, err: '存档里有未知敌人类型' };
+      if (typeof it.gap !== 'number' || !isFinite(it.gap)) return { ok: false, err: '存档里的出怪间隔异常' };
+    }
+  }
+  if (snap.autoMode !== undefined && !autoModeValid(snap.autoMode)) return { ok: false, err: '存档里的自动升级顺序无效' };
   for (let i = 0; i < snap.towers.length; i++) {
     const t = snap.towers[i];
     if (!t || !TOWERS[t.key]) return { ok: false, err: '存档里有未知防御塔类型' };
     if (!isFinite(t.c) || !isFinite(t.r) || !isFinite(t.level) || t.level < 1) return { ok: false, err: '存档里的防御塔数据异常' };
+    if (t.level > MAX_LV) return { ok: false, err: '存档里的防御塔等级异常' };
+    if (t.c < 0 || t.c >= COLS || t.r < 0 || t.r >= ROWS) return { ok: false, err: '存档里的防御塔位置异常' };
   }
   for (let i = 0; i < snap.enemies.length; i++) {
     const e = snap.enemies[i];
     if (!e || !ENEMIES[e.type]) return { ok: false, err: '存档里有未知敌人类型' };
     if (!isFinite(e.dist) || e.dist < 0) return { ok: false, err: '存档里的敌人数据异常' };
+    if (e.hp !== undefined && (!isFinite(e.hp) || e.hp < 0)) return { ok: false, err: '存档里的敌人数据异常' };
+    if (e.maxHp !== undefined && (!isFinite(e.maxHp) || e.maxHp <= 0)) return { ok: false, err: '存档里的敌人数据异常' };
   }
   return { ok: true };
 }
@@ -541,9 +681,11 @@ function hpScale(wave, mode) {
   if (mode === 'endless' && wave > TOTAL_WAVES) sc *= 1 + 0.05 * (wave - TOTAL_WAVES);
   return sc;
 }
-/* 射程随等级增长：前 MAX_RANGE_LV 级每级 +12，之后封顶 */
+/* 射程随等级增长：前 MAX_RANGE_LV 级每级 +12，之后封顶
+   没有射程概念的塔（维修站）恒为 0，避免长出无意义的圈 */
 function rangeAt(key, level) {
   const d = TOWERS[key];
+  if (!d || !d.range) return 0;
   return d.range + Math.min(Math.max(0, level - 1), MAX_RANGE_LV) * 12;
 }
 /* 增幅塔光环：累加范围内其他增幅塔提供的射速加成（自身不吃自己的加成） */
@@ -576,7 +718,10 @@ function towerStats(t, s) {
     poisonDur: (d.poisonDur || 0) * (1 + lv * 0.15),
     /* 破甲上限 60%，避免高等级把敌人护甲压成负数 */
     shred: Math.min(0.6, (d.shred || 0) + lv * 0.02),
-    shredDur: (d.shredDur || 0) * (1 + lv * 0.15)
+    shredDur: (d.shredDur || 0) * (1 + lv * 0.15),
+    /* 维修站：每级多修 1 点生命，脉冲间隔逐级缩短（下限 5 秒） */
+    repairAmt: d.repair ? d.repair + lv : 0,
+    repairGap: d.repair ? Math.max(5, d.repairGap - lv * 0.8) : 0
   };
 }
 /* 升级成本随等级指数增长（与伤害成长同阶），因此「无限升级」仍受金币约束 */
@@ -611,11 +756,13 @@ function newGame(mode) {
   };
 }
 
-function cellFree(s, c, r) {
+/* 格子是否可建造：key 为空表示"任何塔都不行"（用于列举空地），
+   维修站是唯一允许进驻基地格的塔种 */
+function cellFree(s, c, r, key) {
   if (c < 0 || r < 0 || c >= COLS || r >= ROWS) return false;
   const k = c + ',' + r;
   if (s.path.cells[k]) return false;
-  if (s.baseCells.indexOf(k) >= 0) return false;
+  if (s.baseCells.indexOf(k) >= 0 && key !== 'repair') return false;
   if (s.occ[k]) return false;
   return true;
 }
@@ -629,12 +776,13 @@ function buildableCells(s) {
 function placeTower(s, key, c, r) {
   const def = TOWERS[key];
   if (!Number.isInteger(c) || !Number.isInteger(r)) return { ok: false, why: '无效的建造位置' };
-  if (!def || !cellFree(s, c, r)) return { ok: false, why: '这里不能建造' };
+  if (!def || !cellFree(s, c, r, key)) return { ok: false, why: '这里不能建造' };
   if (s.gold < def.cost) return { ok: false, why: '金币不足' };
   s.gold -= def.cost;
   const t = {
     id: s.nextId++, key: key, c: c, r: r, x: cellCX(c), y: cellCY(r),
-    level: 1, cd: 0, ang: -Math.PI / 2, invested: def.cost, flash: 0, kills: 0
+    level: 1, cd: 0, ang: -Math.PI / 2, invested: def.cost, flash: 0, kills: 0,
+    repT: 0, jammed: 0
   };
   s.towers.push(t);
   s.occ[c + ',' + r] = t;
@@ -672,6 +820,11 @@ function autoModeLabel(id) {
   for (let i = 0; i < AUTO_MODES.length; i++) if (AUTO_MODES[i].id === id) return AUTO_MODES[i].label;
   return '智能';
 }
+/* 存档里的升级顺序必须是已知 id，否则自动升级会退化成无序模式 */
+function autoModeValid(id) {
+  for (let i = 0; i < AUTO_MODES.length; i++) if (AUTO_MODES[i].id === id) return true;
+  return false;
+}
 /* 这次升级能带来多少"有效输出/秒"的提升，用于智能模式排序 */
 function towerValueGain(t, s) {
   const d = TOWERS[t.key];
@@ -683,6 +836,7 @@ function towerValueGain(t, s) {
   if (d.poisonDps) gain += (after.poisonDps - before.poisonDps) * 2.5; /* 持续伤害 */
   if (d.ampMul) gain = 24 + 12 * t.level;     /* 支援塔不输出，按经验估值 */
   else if (d.slow) gain = 16 + 6 * t.level;    /* 减速塔同理 */
+  else if (d.repair) gain = 20 + 8 * t.level;   /* 维修站不输出：回血是应急收益，给个经验估值 */
   return Math.max(0.01, gain);
 }
 /* 按当前模式给塔排序（扩散模式以 autoOrigin 为圆心，距离近的先升） */
@@ -839,6 +993,9 @@ function spawnEnemy(s, type, dist) {
     poisonDps: 0, poisonT: 0, poisonSrc: null, shred: 0, shredT: 0,
     healR: def.healR || 0, healRate: (def.healRate || 0) * sc, healFx: 0,
     rage: def.rage || 0,
+    jamR: def.jamR || 0, jamDur: def.jamDur || 0, jamGap: def.jamGap || 0,
+    /* 首次干扰来得早一些，玩家马上能看到效果，之后按 jamGap 周期重复 */
+    jamCd: (def.jamGap || 0) * 0.2,
     gold: def.gold, leak: def.leak, score: def.score,
     color: def.color, shape: def.shape, ang: p.ang, hitT: 0, dead: false, wob: Math.random() * 6.28
   };
@@ -984,6 +1141,8 @@ function fire(s, t, st, target) {
     });
     sfx(1180, 0.05, 'sine', 0.02);
   } else if (def.proj === 'beam') {
+    /* 狙击塔：激光束命中目标后贯穿，splash=0 表示不额外扩散，
+       但会连带擦过与目标身体重叠的邻居（areaDamage 的半径语义：半径 + 敌人身位） */
     areaDamage(s, target.x, target.y, 0, st.dmg, 0, 0, t);
     addEffect(s, { kind: 'beam', x1: t.x, y1: t.y, x2: target.x, y2: target.y, color: def.color, life: 0.17 });
     sfx(1500, 0.06, 'square', 0.02);
@@ -1033,6 +1192,8 @@ function step(s, dt) {
     s.prepLeft -= d;
     if (s.prepLeft <= 0) startWave(s);
   } else if (s.phase === 'spawning') {
+    /* 存档被外部改坏时 spawnTimer 可能是 NaN，会让出怪永远卡住，这里兜底复位 */
+    if (!Number.isFinite(s.spawnTimer)) s.spawnTimer = 0;
     s.spawnTimer -= d;
     let guard = 0;
     while (s.spawnTimer <= 0 && s.spawnQueue.length && guard++ < 40) {
@@ -1081,6 +1242,23 @@ function step(s, dt) {
         addEffect(s, { kind: 'ring', x: e.x, y: e.y, r0: e.r + 4, r1: e.healR, color: '#7dffa8', life: 0.5 });
       }
     }
+    /* 干扰兵：每隔一段时间让射程内的一座防御塔短暂哑火 */
+    if (e.jamR > 0) {
+      e.jamCd -= d;
+      if (e.jamCd <= 0) {
+        e.jamCd = e.jamGap;
+        let bt = null, bd = e.jamR * e.jamR;
+        for (let j = 0; j < s.towers.length; j++) {
+          const tt = s.towers[j];
+          const dd = dist2(tt.x, tt.y, e.x, e.y);
+          if (dd <= bd) { bd = dd; bt = tt; }
+        }
+        if (bt) {
+          bt.jammed = Math.max(bt.jammed || 0, e.jamDur);
+          addEffect(s, { kind: 'ring', x: bt.x, y: bt.y, r0: 24, r1: 6, color: '#c78ef0', life: 0.35 });
+        }
+      }
+    }
     if (e.slowT > 0) {
       e.slowT -= d;
       if (e.slowT <= 0) { e.slowT = 0; e.slowMul = 1; }
@@ -1112,6 +1290,22 @@ function step(s, dt) {
     const st = towerStats(t, s);
     if (t.flash > 0) t.flash -= d;
     if (t.cd > 0) t.cd -= d;
+    if (t.jammed > 0) t.jammed = Math.max(0, t.jammed - d);
+    /* 维修站：驻扎在基地，不需要目标，按固定节奏修复核心受损的生命 */
+    if (st.repairAmt > 0) {
+      t.repT = (t.repT || 0) + d;
+      if (t.repT >= st.repairGap) {
+        t.repT -= st.repairGap;
+        if (s.lives < s.maxLives) {
+          const heal = Math.min(st.repairAmt, s.maxLives - s.lives);
+          s.lives += heal;
+          addFloat(s, s.base.cx - 20, s.base.cy - 46, '+' + heal + ' 生命', C.good);
+          addEffect(s, { kind: 'ring', x: s.base.cx, y: s.base.cy, r0: 12, r1: 76, color: C.good, life: 0.5 });
+          sfx(880, 0.12, 'sine', 0.05);
+        }
+      }
+      continue; /* 维修站不开火 */
+    }
     const target = pickTarget(s, t, st.range);
     if (target) {
       const want = Math.atan2(target.y - t.y, target.x - t.x);
@@ -1119,8 +1313,8 @@ function step(s, dt) {
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       t.ang += clamp(diff, -7 * d, 7 * d);
-      /* 支援型防御塔（增幅塔）不参与开火 */
-      if (t.cd <= 0 && st.rate > 0) { fire(s, t, st, target); t.cd = 1 / st.rate; }
+      /* 支援型防御塔（增幅塔）不参与开火；被干扰的塔暂时哑火 */
+      if (t.cd <= 0 && st.rate > 0 && t.jammed <= 0) { fire(s, t, st, target); t.cd = 1 / st.rate; }
     }
   }
 
@@ -1130,7 +1324,8 @@ function step(s, dt) {
     let dead = false;
     if (sh.kind === 'homing') {
       const tg = sh.target;
-      if (!tg || tg.dead) { dead = true; }
+      sh.life = (Number.isFinite(sh.life) ? sh.life : 3) - d;
+      if (!tg || tg.dead || sh.life <= 0) { dead = true; }
       else {
         const dx = tg.x - sh.x, dy = tg.y - sh.y;
         const len = Math.hypot(dx, dy);
@@ -1147,7 +1342,8 @@ function step(s, dt) {
       }
     } else if (sh.kind === 'frost') {
       const tg = sh.target;
-      if (!tg || tg.dead) { dead = true; }
+      sh.life = (Number.isFinite(sh.life) ? sh.life : 1.4) - d;
+      if (!tg || tg.dead || sh.life <= 0) { dead = true; }
       else {
         sh.tx = tg.x; sh.ty = tg.y;
         const dx = sh.tx - sh.x, dy = sh.ty - sh.y;
@@ -1385,6 +1581,18 @@ function drawTowerShape(ctx, key, x, y, ang, scale, level) {
     ctx.strokeStyle = 'rgba(125,224,200,.9)';
     ctx.lineWidth = 1.4 * u;
     ctx.beginPath(); ctx.arc(12 * u, 0, 5.4 * u, 0, 6.3); ctx.stroke();
+  } else if (key === 'repair') {
+    // 维修站：旋转的十字吊舱 + 外圈脉冲环
+    ctx.fillStyle = d.dark;
+    ctx.beginPath(); ctx.arc(-2 * u, 0, 8 * u, 0, 6.3); ctx.fill();
+    ctx.fillStyle = '#ffe9f3';
+    rr(ctx, -3.6 * u, -9 * u, 7.2 * u, 18 * u, 3 * u); ctx.fill();
+    rr(ctx, -9 * u, -3.6 * u, 18 * u, 7.2 * u, 3 * u); ctx.fill();
+    ctx.fillStyle = d.color;
+    ctx.beginPath(); ctx.arc(0, 0, 2.4 * u, 0, 6.3); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,158,199,.9)';
+    ctx.lineWidth = 1.5 * u;
+    ctx.beginPath(); ctx.arc(0, 0, 13.5 * u, 0, 6.3); ctx.stroke();
   }
   ctx.restore();
 
@@ -1415,12 +1623,14 @@ function drawTowers(ctx, s) {
   if (showR) {
     const st = towerStats(showR, s);
     ctx.save();
-    ctx.beginPath(); ctx.arc(showR.x, showR.y, st.range, 0, 6.3);
-    ctx.fillStyle = 'rgba(120,220,255,.10)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(140,230,255,.55)';
-    ctx.setLineDash([6, 6]); ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.setLineDash([]);
+    if (st.range > 0) {
+      ctx.beginPath(); ctx.arc(showR.x, showR.y, st.range, 0, 6.3);
+      ctx.fillStyle = 'rgba(120,220,255,.10)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(140,230,255,.55)';
+      ctx.setLineDash([6, 6]); ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.restore();
   }
   for (let i = 0; i < s.towers.length; i++) {
@@ -1432,7 +1642,20 @@ function drawTowers(ctx, s) {
       ctx.restore();
     }
     const sc = 1 + (t.flash > 0 ? t.flash * 0.5 : 0);
+    /* 被干扰兵压制的塔：整体变暗，外加一圈紫色电波 */
+    const jam = t.jammed > 0;
+    ctx.save();
+    if (jam) ctx.globalAlpha = 0.45;
     drawTowerShape(ctx, t.key, t.x, t.y, t.ang, sc, t.level);
+    ctx.restore();
+    if (jam) {
+      ctx.save();
+      ctx.beginPath(); ctx.arc(t.x, t.y, 22, 0, 6.3);
+      ctx.strokeStyle = 'rgba(199,142,240,.9)'; ctx.lineWidth = 2;
+      ctx.setLineDash([3, 3]); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
   }
 }
 
@@ -1523,6 +1746,22 @@ function drawEnemy(ctx, e) {
     ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 2; ctx.stroke();
     ctx.beginPath(); ctx.arc(0, 0, r * 0.34, 0, 6.3);
     ctx.fillStyle = '#ffe3f2'; ctx.fill();
+  } else if (e.shape === 'disruptor') {
+    // 干扰兵：菱形本体 + 向外扩散的电波弧
+    ctx.rotate(e.wob * 0.6);
+    ctx.beginPath();
+    ctx.moveTo(r * 1.15, 0); ctx.lineTo(0, r * 0.85); ctx.lineTo(-r * 1.15, 0); ctx.lineTo(0, -r * 0.85);
+    ctx.closePath();
+    ctx.fillStyle = body; ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#f3dcff';
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.3, 0, 6.3); ctx.fill();
+    ctx.strokeStyle = 'rgba(199,142,240,.75)'; ctx.lineWidth = 1.6;
+    for (let i = 1; i <= 2; i++) {
+      const rr3 = r * (0.95 + i * 0.45);
+      ctx.beginPath(); ctx.arc(0, 0, rr3, -0.95, 0.95); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, rr3, Math.PI - 0.95, Math.PI + 0.95); ctx.stroke();
+    }
   } else if (e.shape === 'swarm') {
     // 蜂群：三只小虫叠成蜂巢
     ctx.beginPath();
@@ -1876,7 +2115,10 @@ function drawBar(ctx, s) {
     const d = TOWERS[t.key], st = towerStats(t, s);
     txt(ctx, d.name + '  Lv.' + t.level, p.x + 12, p.y + 18, 14, d.color, 'left', 700);
     if (st.amp > 0) txt(ctx, '增幅 +' + Math.round(st.amp * 100) + '%', p.x + p.w - 12, p.y + 18, 11, '#7de0c8', 'right', 700);
-    if (st.rate > 0) {
+    if (st.repairAmt > 0) {
+      txt(ctx, '驻扎基地 · 每 ' + st.repairGap.toFixed(1) + 's 修复 ' + st.repairAmt + ' 点生命',
+        p.x + 12, p.y + 38, 11, C.dim, 'left', 500, p.w - 24);
+    } else if (st.rate > 0) {
       txt(ctx, '伤害 ' + Math.round(st.dmg) + '   射程 ' + Math.round(st.range) + '   射速 ' + st.rate.toFixed(2) + '/s',
         p.x + 12, p.y + 38, 11, C.dim, 'left', 500, p.w - 24);
     } else {
@@ -1962,7 +2204,7 @@ function drawPreview(ctx, s) {
   const c = s.hover.c, r = s.hover.r;
   if (c < 0 || r < 0) return;
   const d = TOWERS[s.pick];
-  const free = cellFree(s, c, r);
+  const free = cellFree(s, c, r, s.pick);
   const canAfford = s.gold >= d.cost;
   const x = c * CELL, y = FIELD_Y + r * CELL;
   ctx.save();
@@ -1973,7 +2215,7 @@ function drawPreview(ctx, s) {
   ctx.setLineDash([5, 4]);
   ctx.lineWidth = 1.6; ctx.stroke();
   ctx.setLineDash([]);
-  if (free) {
+  if (free && d.range > 0) {
     ctx.beginPath();
     ctx.arc(cellCX(c), cellCY(r), d.range, 0, 6.3);
     ctx.fillStyle = 'rgba(120,220,255,.08)';
@@ -2011,8 +2253,8 @@ function drawMenu(ctx, s) {
   const tips = [
     '① 点击下方卡片选塔，再点草地空位建造',
     '② 点击已建造的塔可升级 / 出售，塔可以无限升级（成本逐级上涨）',
-    '③ 箭塔单体 · 炮台范围 · 霜塔减速 · 狙击远程 · 磁暴连锁 · 毒液腐蚀 · 增幅支援',
-    '④ 分裂虫会钻出幼虫；医疗兵会治疗同伴；狂怒兽残血加速；蜂群数量惊人',
+    '③ 箭塔单体 · 炮台范围 · 霜塔减速 · 狙击远程 · 磁暴连锁 · 毒液腐蚀 · 增幅支援 · 维修站回血',
+    '④ 分裂虫会钻出幼虫；医疗兵会治疗同伴；干扰兵会让防御塔哑火；狂怒兽残血加速',
     '⑤ 撑完全部波次即胜利；无尽模式没有终点，只有纪录；熔渊是峡谷专属关卡'
   ];
   for (let i = 0; i < tips.length; i++) txt(ctx, tips[i], W / 2, 284 + i * 20, 12.5, '#8aa6b4', 'center', 500);
@@ -2710,12 +2952,12 @@ function handleMove(s, x, y) {
   s.hover.r = cell.r;
   const R = uiRects(s);
   s.autoHover = null;
+  s.pauseHover = null;
   if (inRect(R.auto, x, y)) s.autoHover = 'auto';
   else if (inRect(R.autoMode, x, y)) s.autoHover = 'autoMode';
   /* 暂停面板按钮悬停 */
   if (s.paused) {
     const PR = pauseRects();
-    s.pauseHover = null;
     if (inRect(PR.exportBtn, x, y)) s.pauseHover = 'export';
     else if (inRect(PR.importBtn, x, y)) s.pauseHover = 'import';
     else if (inRect(PR.autoBtn, x, y)) s.pauseHover = 'auto';
@@ -2918,6 +3160,7 @@ const api = {
   ampBoost: ampBoost,
   buildableCells: buildableCells, cellFree: cellFree, towerStats: towerStats,
   upgradeCost: upgradeCost, sellValue: sellValue, hpScale: hpScale,
+  waveSummary: waveSummary, snapshot: snapshot, num: num,
   TOWER_KEYS: TOWER_KEYS, TOTAL_WAVES: TOTAL_WAVES,
   state: function () { return S; },
   click: handleClick, uiRects: uiRects, menuRects: menuRects, overRects: overRects,
@@ -2932,7 +3175,7 @@ const api = {
   utf8Bytes: utf8Bytes, utf8String: utf8String,
   autoUpgradeTick: autoUpgradeTick, autoUpgradeOrder: autoUpgradeOrder,
   towerValueGain: towerValueGain, setAutoMode: setAutoMode, cycleAutoMode: cycleAutoMode,
-  AUTO_RESERVE: AUTO_RESERVE, AUTO_MODES: AUTO_MODES,
+  autoModeValid: autoModeValid, AUTO_RESERVE: AUTO_RESERVE, AUTO_MODES: AUTO_MODES,
   boot: boot, muted: function (v) { if (v !== undefined) muted = !!v; return muted; }
 };
 if (typeof global.TD === 'undefined') global.TD = api;

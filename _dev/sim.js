@@ -17,7 +17,8 @@ const docStub = { getElementById: () => null, addEventListener() {}, readyState:
 const storage = Object.create(null);
 global.localStorage = {
   getItem(k) { return Object.prototype.hasOwnProperty.call(storage, k) ? storage[k] : null; },
-  setItem(k, v) { storage[k] = String(v); }
+  setItem(k, v) { storage[k] = String(v); },
+  removeItem(k) { delete storage[k]; }
 };
 new Function('window', 'document', 'localStorage', 'requestAnimationFrame', 'performance', 'console', m[1])(
   winStub, docStub, global.localStorage, () => {}, { now: Date.now }, console);
@@ -427,7 +428,7 @@ assert('不建塔必须失败', idle.scene === 'lose' && idle.lives === 0);
   /* 六塔布局不能重叠，右键不能误建塔 */
   const s = TD.newGame('normal');
   const R = TD.uiRects(s);
-  assert('七张塔卡完整且包含毒液塔与增幅塔', R.cards.length === 7 && R.cards[5].key === 'venom' && R.cards[6].key === 'amp');  assert('升级/出售按钮不侵入波次面板', R.upBtn.x + R.upBtn.w <= R.wave.x && R.sellBtn.x + R.sellBtn.w <= R.wave.x);
+  assert('八张塔卡完整且包含毒液塔、增幅塔与维修站', R.cards.length === 8 && R.cards[5].key === 'venom' && R.cards[6].key === 'amp' && R.cards[7].key === 'repair');  assert('升级/出售按钮不侵入波次面板', R.upBtn.x + R.upBtn.w <= R.wave.x && R.sellBtn.x + R.sellBtn.w <= R.wave.x);
   const handlers = {};
   const canvas = {
     addEventListener(name, fn) { handlers[name] = fn; },
@@ -570,6 +571,189 @@ console.log('\n--- 缺陷回归 ---');
   assert('最后一张塔卡不与选中面板重叠', last.x + last.w <= R.panel.x);
   assert('升级/出售按钮不侵入波次面板', R.upBtn.x + R.upBtn.w <= R.wave.x && R.sellBtn.x + R.sellBtn.w <= R.wave.x);
   assert('塔卡宽度在合理区间内', R.cards.every(c => c.w >= 56 && c.w <= 78));
+}
+console.log('\n--- 新增功能：维修站（驻扎基地回血）---');
+{
+  /* 维修站是唯一允许建在基地格上的塔 */
+  const s = TD.newGame('normal');
+  s.gold = 9999;
+  const baseCell = s.baseCells[3].split(',').map(Number);
+  const inBase = TD.placeTower(s, 'repair', baseCell[0], baseCell[1]);
+  const other = TD.placeTower(s, 'arrow', baseCell[0], baseCell[1]);
+  assert('维修站可以建在基地格上', inBase.ok === true && s.towers.length === 1);
+  assert('其他防御塔仍然不能建在基地格上', other.ok === false);
+  assert('维修站不占普通空地以外的特殊规则', TD.cellFree(s, baseCell[0], baseCell[1], 'repair') === false);
+  assert('维修站射程为 0（不画范围圈）', TD.towerStats(inBase.tower, s).range === 0);
+}
+{
+  /* 维修站按节奏修复核心生命，且不越上限 */
+  const s = TD.newGame('normal');
+  s.gold = 9999; s.wave = 1; s.prepLeft = 9999;
+  const b = TD.placeTower(s, 'repair', 23, 6);
+  const st = TD.towerStats(b.tower, s);
+  assert('维修站有修复量与脉冲间隔', st.repairAmt > 0 && st.repairGap > 0);
+  s.lives = 5;
+  for (let i = 0; i < Math.ceil(st.repairGap * 60) + 30; i++) TD.step(s, 1 / 60);
+  assert('维修站会修复核心受损的生命', s.lives > 5);
+  s.lives = s.maxLives;
+  for (let i = 0; i < 200; i++) TD.step(s, 1 / 60);
+  assert('核心满血时维修站不会溢出生命上限', s.lives === s.maxLives);
+}
+{
+  /* 升级让维修站修得更多、间隔更短 */
+  const s = TD.newGame('normal');
+  s.gold = 9999;
+  const b = TD.placeTower(s, 'repair', 23, 6);
+  const st1 = TD.towerStats(b.tower, s);
+  TD.upgradeTower(s, b.tower);
+  const st2 = TD.towerStats(b.tower, s);
+  assert('升级维修站提高单次修复量', st2.repairAmt > st1.repairAmt);
+  assert('升级维修站缩短修复间隔', st2.repairGap < st1.repairGap);
+  assert('维修站不开火（不产生子弹）', (function () {
+    const s2 = TD.newGame('normal'); s2.gold = 9999; s2.wave = 1; s2.prepLeft = 9999;
+    TD.placeTower(s2, 'repair', 23, 6);
+    TD.spawnEnemy(s2, 'grunt', 300);
+    for (let i = 0; i < 180; i++) TD.step(s2, 1 / 60);
+    return s2.shots.length === 0;
+  })());
+  assert('自动升级的建塔预留金仍够最贵的一座塔', TD.AUTO_RESERVE >= Math.max.apply(null, TD.TOWER_KEYS.map(k => TD.TOWERS[k].cost)));
+  /* 自动升级不能把维修站永远跳过（它不输出，需要经验估值参与排序） */
+  const s3 = TD.newGame('normal');
+  s3.gold = 100000; s3.autoUp = true; s3.autoMode = 'smart';
+  TD.placeTower(s3, 'repair', 23, 6);
+  TD.placeTower(s3, 'arrow', 6, 6);
+  for (let i = 0; i < 80; i++) TD.step(s3, 0.05);
+  assert('自动升级也会给维修站升级', s3.towers.find(t => t.key === 'repair').level > 1);
+}
+{
+  /* 维修站写进存档并原样恢复 */
+  const s = TD.newGame('normal');
+  s.gold = 9999; s.wave = 3; s.phase = 'spawning';
+  TD.placeTower(s, 'repair', 23, 6);
+  TD.upgradeTower(s, s.towers[0]);
+  TD.saveGame(s);
+  const l = TD.loadGame();
+  assert('维修站可存档并恢复等级', !!l && l.towers.length === 1 && l.towers[0].key === 'repair' && l.towers[0].level === 2);
+}
+console.log('\n--- 新增功能：干扰兵（让防御塔哑火）---');
+{
+  /* 干扰兵会让射程内的防御塔短暂失灵 */
+  const s = TD.newGame('normal');
+  s.gold = 9999; s.wave = 1; s.prepLeft = 9999;
+  const b = TD.placeTower(s, 'arrow', 6, 7);
+  const e = TD.spawnEnemy(s, 'disruptor', 500);
+  assert('干扰兵可生成且带干扰参数', !!e && e.jamR > 0 && e.jamDur > 0 && e.jamGap > 0);
+  let jammedSeen = false;
+  for (let i = 0; i < 60 * 30; i++) {
+    TD.step(s, 1 / 60);
+    if (b.tower.jammed > 0) { jammedSeen = true; break; }
+  }
+  assert('干扰兵会让范围内的防御塔哑火', jammedSeen);
+  /* 哑火期间不能开火 */
+  const s2 = TD.newGame('normal');
+  s2.gold = 9999; s2.wave = 1; s2.prepLeft = 9999;
+  const t2 = TD.placeTower(s2, 'arrow', 6, 7).tower;
+  TD.spawnEnemy(s2, 'grunt', 500);
+  t2.jammed = 5;
+  for (let i = 0; i < 60; i++) TD.step(s2, 1 / 60);
+  assert('被干扰的防御塔在干扰期内不开火', s2.shots.length === 0);
+  /* 干扰范围外的塔不受影响 */
+  const s3 = TD.newGame('normal');
+  s3.gold = 9999; s3.wave = 1; s3.prepLeft = 9999;
+  const far = TD.placeTower(s3, 'arrow', 20, 11).tower;
+  const dis = TD.spawnEnemy(s3, 'disruptor', 500);
+  for (let i = 0; i < 60 * 20; i++) TD.step(s3, 1 / 60);
+  assert('干扰范围外的防御塔不会被干扰', far.jammed === 0);
+}
+{
+  /* 干扰兵已进入战役波次、熔渊波次与无尽程序波次 */
+  const s = TD.newGame('normal'); s.wave = 9; s.prepLeft = 0;
+  TD.callWaveEarly(s);
+  assert('第 10 波生成干扰兵', s.wave === 10 && s.spawnQueue.some(q => q.t === 'disruptor'));
+  const f = TD.newGame('forge'); f.wave = 8; f.prepLeft = 0;
+  TD.callWaveEarly(f);
+  assert('熔渊第 9 波生成干扰兵', f.wave === 9 && f.spawnQueue.some(q => q.t === 'disruptor'));
+  const es = TD.newGame('endless'); es.wave = 15; es.prepLeft = 0;
+  TD.callWaveEarly(es);
+  assert('无尽程序波次包含干扰兵', es.spawnQueue.some(q => q.t === 'disruptor'));
+}
+console.log('\n--- 缺陷回归：存档健壮性与出怪卡死 ---');
+{
+  /* 存档坐标被篡改：读档后必须按格子重算 */
+  const s = TD.newGame('normal');
+  TD.placeTower(s, 'arrow', 6, 3);
+  TD.saveGame(s);
+  const raw = JSON.parse(storage['TD_SAVE_V1']);
+  raw.towers[0].x = 99999; raw.towers[0].y = -99999;
+  storage['TD_SAVE_V1'] = JSON.stringify(raw);
+  const l = TD.loadGame();
+  assert('存档里的塔坐标被篡改后按格子重算', !!l && l.towers[0].x === 6 * TD.CELL + TD.CELL / 2 && l.towers[0].y === 60 + 3 * TD.CELL + TD.CELL / 2);
+}
+{
+  /* 存档数值被篡改：等级 / 阶段 / 统计 / 出怪队列都必须被拦下 */
+  const base = { v: 1, mode: 'normal', wave: 3, gold: 10, lives: 5, maxLives: 20, score: 0, towers: [], enemies: [] };
+  const bad = (o) => TD.decodeSaveCode(TD.encodeSaveCode(Object.assign({}, base, o))).ok === false;
+  assert('防御塔等级越界被拒绝', bad({ towers: [{ key: 'arrow', c: 1, r: 1, level: 9999 }] }));
+  assert('防御塔位置越界被拒绝', bad({ towers: [{ key: 'arrow', c: 999, r: 1, level: 1 }] }));
+  assert('对局阶段非法被拒绝', bad({ phase: '乱写' }));
+  assert('统计数据非法被拒绝', bad({ stat: { kills: -5 } }));
+  assert('出怪队列里有未知敌人被拒绝', bad({ spawnQueue: [{ t: '外星人', gap: 1 }] }));
+  assert('出怪间隔非数字被拒绝', bad({ spawnQueue: [{ t: 'grunt', gap: 'x' }] }));
+  assert('自动升级顺序非法被拒绝', bad({ autoMode: '乱写' }));
+}
+{
+  /* 统计字段缺失时读档不得产生 NaN */
+  const s = TD.newGame('normal');
+  TD.placeTower(s, 'arrow', 6, 3);
+  s.wave = 2; s.phase = 'spawning';
+  TD.saveGame(s);
+  const raw = JSON.parse(storage['TD_SAVE_V1']);
+  delete raw.stat.goldEarned; delete raw.stat.kills;
+  storage['TD_SAVE_V1'] = JSON.stringify(raw);
+  const l = TD.loadGame();
+  assert('统计字段缺失时读档补零而不是 NaN', !!l && l.stat.goldEarned === 0 && l.stat.kills === 0);
+  assert('读档后的累计收入仍是有限数字', isFinite(l.stat.goldEarned));
+}
+{
+  /* spawnTimer 被写成 NaN 时出怪不能永久卡死 */
+  const s = TD.newGame('normal');
+  s.wave = 1; s.phase = 'spawning'; s.spawnTimer = NaN;
+  s.spawnQueue = [{ t: 'grunt', gap: 0.2 }];
+  for (let i = 0; i < 30; i++) TD.step(s, 1 / 60);
+  assert('出怪计时器异常时能恢复出怪', s.enemies.length > 0);
+  /* 队列里的间隔被写成 NaN 同样不能卡死 */
+  const s2 = TD.newGame('normal');
+  s2.wave = 1; s2.phase = 'spawning'; s2.spawnTimer = 0;
+  s2.spawnQueue = [{ t: 'grunt', gap: NaN }];
+  for (let i = 0; i < 30; i++) TD.step(s2, 1 / 60);
+  assert('出怪间隔异常时不会卡死', s2.enemies.length > 0);
+}
+{
+  /* 路径必须延伸到基地中心，敌人走到核心上才算漏怪 */
+  const s = TD.newGame('normal');
+  const last = s.path.pts[s.path.pts.length - 1];
+  assert('路径末端就是基地中心', Math.abs(last.x - s.base.cx) < 0.001 && Math.abs(last.y - s.base.cy) < 0.001);
+  const f = TD.newGame('forge');
+  const flast = f.path.pts[f.path.pts.length - 1];
+  assert('熔渊路径末端也是基地中心', Math.abs(flast.x - f.base.cx) < 0.001 && Math.abs(flast.y - f.base.cy) < 0.001);
+}
+{
+  /* 子弹有寿命上限，不会永远滞留在场上 */
+  const s = TD.newGame('normal'); s.wave = 1; s.prepLeft = 9999;
+  const e = TD.spawnEnemy(s, 'grunt', 500);
+  s.shots.push({ kind: 'homing', x: e.x - 2000, y: e.y, target: e, dmg: 1, speed: 1, color: '#fff', src: null, ang: 0, life: 1 });
+  for (let i = 0; i < 90; i++) TD.step(s, 1 / 60);
+  assert('寿命耗尽的子弹会被清除', s.shots.length === 0);
+}
+{
+  /* 主菜单反复询问存档不应每次都重新解析本地存储 */
+  const s = TD.newGame('normal');
+  TD.saveGame(s);
+  const i1 = TD.saveInfo();
+  const i2 = TD.saveInfo();
+  assert('存档信息读取有缓存且内容正确', i1 === i2 && i1 && i1.mode === 'normal');
+  TD.clearSave();
+  assert('清档后存档信息立刻为空', TD.saveInfo() === null);
 }
 console.log('\n--- UI 点击链路 ---');
 {
